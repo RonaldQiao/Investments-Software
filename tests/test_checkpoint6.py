@@ -19,7 +19,7 @@ def database():
     return conn, lp_id
 
 
-def test_attribution_uses_audited_marks_and_eastern_trade_dates():
+def test_attribution_matches_gross_nav_change_without_fee_liability():
     conn, lp_id = database()
     set_setting(conn, "mgmt_fee_bps", 0)
     instrument_id = conn.execute(
@@ -33,12 +33,32 @@ def test_attribution_uses_audited_marks_and_eastern_trade_dates():
     record_cash_flow(conn, "2024-01-02T15:00:00-05:00", 1000, lp_id, "test")
     take_snapshot(conn, date(2024, 1, 2), refresh=False)
     conn.execute("UPDATE instruments SET manual_mark=110 WHERE id=?", (instrument_id,))
+    conn.execute(
+        "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees) "
+        "VALUES (?,?,?,?,?,?)",
+        (instrument_id, "2024-01-03T12:00:00-05:00", "BUY", 5, 105, 2),
+    )
     take_snapshot(conn, date(2024, 1, 3), refresh=False)
     conn.execute("UPDATE instruments SET manual_mark=120 WHERE id=?", (instrument_id,))
     take_snapshot(conn, date(2024, 1, 4), refresh=False)
     result = attribution(conn, date(2024, 1, 2), date(2024, 1, 4))
-    assert result["rows"][0]["pnl"] == pytest.approx(200)
-    assert result["total"]["pnl"] == pytest.approx(200)
+    nav = conn.execute(
+        "SELECT date,nav FROM nav_snapshots WHERE date IN ('2024-01-02','2024-01-04') "
+        "ORDER BY date"
+    ).fetchall()
+    net_flows = conn.execute(
+        "SELECT COALESCE(SUM(flows_today),0) FROM nav_snapshots "
+        "WHERE date>'2024-01-02' AND date<='2024-01-04'"
+    ).fetchone()[0]
+    mgmt_fees = conn.execute(
+        "SELECT COALESCE(SUM(mgmt_fee_accrued),0) FROM nav_snapshots "
+        "WHERE date>'2024-01-02' AND date<='2024-01-04'"
+    ).fetchone()[0]
+    assert result["rows"][0]["pnl"] == pytest.approx(273)
+    assert result["total"]["pnl"] == pytest.approx(
+        nav[-1]["nav"] - nav[0]["nav"] - net_flows + mgmt_fees,
+        abs=1e-6,
+    )
 
 
 def test_snapshot_refresh_retries_without_waiting(monkeypatch):
