@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
@@ -114,6 +114,15 @@ async def fetch_yahoo_meta(symbol: str) -> dict | None:
 async def fetch_benchmark_history(symbol: str, range_: str = "5d") -> dict[str, float | None]:
     if not symbol:
         return {}
+    return await _fetch_benchmark_chart(
+        symbol,
+        {"range": range_, "interval": "1d"},
+    )
+
+
+async def _fetch_benchmark_chart(
+    symbol: str, params: dict[str, str | int]
+) -> dict[str, float | None]:
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         async with httpx.AsyncClient(
@@ -121,7 +130,7 @@ async def fetch_benchmark_history(symbol: str, range_: str = "5d") -> dict[str, 
         ) as client:
             response = await client.get(
                 f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}",
-                params={"range": range_, "interval": "1d"},
+                params=params,
             )
             response.raise_for_status()
             result = response.json().get("chart", {}).get("result") or []
@@ -138,6 +147,21 @@ async def fetch_benchmark_history(symbol: str, range_: str = "5d") -> dict[str, 
             }
     except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, OSError):
         return {}
+
+
+async def fetch_benchmark_closes(
+    symbol: str, start: date, end: date
+) -> dict[str, float | None]:
+    if not symbol:
+        return {}
+    period1 = int(datetime.combine(start, datetime.min.time(), UTC).timestamp())
+    period2 = int(
+        datetime.combine(end + timedelta(days=2), datetime.min.time(), UTC).timestamp()
+    )
+    return await _fetch_benchmark_chart(
+        symbol,
+        {"period1": period1, "period2": period2, "interval": "1d"},
+    )
 
 
 async def fetch_benchmark_close(symbol: str, target_date: date) -> float | None:

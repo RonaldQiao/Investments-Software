@@ -5,13 +5,13 @@ import csv
 import io
 import json
 import math
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 
 from .benchmark import beta, pair_returns
 from .db import get_setting, set_setting
 from .positions import build_positions, cash_from_trades
-from .pricing import refresh_prices, yahoo_symbol_for
+from .pricing import fetch_benchmark_closes, refresh_prices, yahoo_symbol_for
 
 _BENCHMARK_UNSET = object()
 
@@ -278,7 +278,7 @@ def take_snapshot(
     gross_nav = float(portfolio["nav"])
     liability = float(get_setting(conn, "fee_liability", 0) or 0)
     first_snapshot = existing is None and not conn.execute(
-        "SELECT 1 FROM nav_snapshots LIMIT 1"
+        "SELECT 1 FROM nav_snapshots WHERE source!='imported' LIMIT 1"
     ).fetchone()
     units = float(
         conn.execute("SELECT COALESCE(SUM(units),0) units FROM lp_units").fetchone()[
@@ -414,7 +414,8 @@ def history_series(conn):
             (benchmark_symbol,),
         ).fetchall()
     ] if benchmark_symbol else []
-    pairs = pair_returns(rows, benchmark_rows)
+    live_rows = [row for row in rows if row["source"] != "imported"]
+    pairs = pair_returns(live_rows, benchmark_rows)
     benchmark_closes = sorted(
         (row["date"], float(row["close"]))
         for row in benchmark_rows
@@ -435,12 +436,15 @@ def history_series(conn):
     benchmark_cumulative = 1.0
     benchmark_values = []
     returns = []
+    live_returns = []
     return_days = []
     for row in rows:
         if row["daily_return"] is not None:
             cumulative *= 1 + row["daily_return"]
             returns.append(row["daily_return"])
-            return_days.append((row["date"], row["daily_return"]))
+            if row["source"] != "imported":
+                live_returns.append(row["daily_return"])
+                return_days.append((row["date"], row["daily_return"]))
         if row["levered_return"] is not None:
             cumulative_levered *= 1 + row["levered_return"]
         row["cumulative_return"] = cumulative - 1 if returns else None
@@ -460,21 +464,34 @@ def history_series(conn):
     for value in nav_units:
         peak = value if peak is None else max(peak, value)
         peaks.append(value / peak - 1)
-    count = len(returns)
-    mean = sum(returns) / count if count else 0
-    variance = sum((item - mean) ** 2 for item in returns) / (count - 1) if count > 1 else 0
+    count = len(live_returns)
+    mean = sum(live_returns) / count if count else 0
+    variance = (
+        sum((item - mean) ** 2 for item in live_returns) / (count - 1)
+        if count > 1
+        else 0
+    )
     vol = math.sqrt(variance) * math.sqrt(252)
-    has_benchmark = bool(pairs)
+    has_benchmark = bool(benchmark_returns)
+    elapsed_days = (
+        (date.fromisoformat(rows[-1]["date"]) - date.fromisoformat(rows[0]["date"])).days
+        if len(rows) > 1
+        else 0
+    )
     summary = {
         "inception_return": cumulative - 1 if returns else None,
-        "annualized_return": (cumulative ** (252 / count) - 1) if count else None,
+        "annualized_return": (
+            cumulative ** (365.25 / elapsed_days) - 1
+            if elapsed_days > 0 and returns
+            else None
+        ),
         "annualized_vol": vol,
         "sharpe": (mean / math.sqrt(variance) * math.sqrt(252)) if variance else None,
         "max_drawdown": min(peaks) if peaks else None,
-        "best_day": max(returns) if returns else None,
-        "best_day_date": max(return_days, key=lambda item: item[1])[0] if returns else None,
-        "worst_day": min(returns) if returns else None,
-        "worst_day_date": min(return_days, key=lambda item: item[1])[0] if returns else None,
+        "best_day": max(live_returns) if live_returns else None,
+        "best_day_date": max(return_days, key=lambda item: item[1])[0] if live_returns else None,
+        "worst_day": min(live_returns) if live_returns else None,
+        "worst_day_date": min(return_days, key=lambda item: item[1])[0] if live_returns else None,
         "benchmark_return": benchmark_cumulative - 1 if has_benchmark else None,
         "excess_return": (
             cumulative - benchmark_cumulative if has_benchmark and returns else None
@@ -518,7 +535,117 @@ def history_series(conn):
         "chart_inception_y": chart_inception_y,
         "benchmark_values": benchmark_values,
         "benchmark_symbol": benchmark_symbol,
+        "imported_exists": any(row["source"] == "imported" for row in rows),
     }
+
+
+def import_track_record(conn, rows: list[dict]) -> dict:
+    if not rows:
+        raise ValueError("Track record must contain at least one row")
+    normalized = []
+    previous_date = None
+    for row in rows:
+        row_date = row["date"]
+        if not isinstance(row_date, date):
+            row_date = date.fromisoformat(str(row_date))
+        nav = float(row["nav"])
+        flow = float(row.get("flow", 0) or 0)
+        if previous_date is not None and row_date <= previous_date:
+            raise ValueError("Track record dates must be strictly increasing")
+        if nav <= 0:
+            raise ValueError("Track record NAV must be positive")
+        normalized.append({"date": row_date, "nav": nav, "flow": flow})
+        previous_date = row_date
+    first_live = conn.execute(
+        "SELECT date FROM nav_snapshots WHERE source!='imported' ORDER BY date LIMIT 1"
+    ).fetchone()
+    if first_live and any(row["date"].isoformat() >= first_live["date"] for row in normalized):
+        raise ValueError("Imported dates must precede the first live snapshot")
+    conn.execute("DELETE FROM nav_snapshots WHERE source='imported'")
+    inception = float(get_setting(conn, "inception_nav_per_unit", 1000))
+    navpus = [inception]
+    for previous, current in pairwise(normalized):
+        navpus.append(
+            navpus[-1] * (current["nav"] - current["flow"]) / previous["nav"]
+        )
+    live_navpu = first_live and conn.execute(
+        "SELECT nav_per_unit FROM nav_snapshots WHERE date=?", (first_live["date"],)
+    ).fetchone()
+    if live_navpu:
+        scale = float(live_navpu["nav_per_unit"]) / navpus[-1]
+        navpus = [value * scale for value in navpus]
+        continuity = "scaled to first live snapshot"
+    else:
+        set_setting(conn, "inception_nav_per_unit", navpus[-1])
+        continuity = "set inception NAV/unit to imported endpoint"
+    now = datetime.now(UTC).isoformat()
+    for index, row in enumerate(normalized):
+        daily_return = navpus[index] / navpus[index - 1] - 1 if index else None
+        conn.execute(
+            "INSERT INTO nav_snapshots(date,ts,nav,cash,gross_long,gross_short,net_exposure,"
+            "flows_today,units_outstanding,nav_per_unit,daily_return,levered_return,"
+            "mgmt_fee_accrued,source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(date) DO UPDATE SET ts=excluded.ts,nav=excluded.nav,cash=excluded.cash,"
+            "gross_long=excluded.gross_long,gross_short=excluded.gross_short,"
+            "net_exposure=excluded.net_exposure,flows_today=excluded.flows_today,"
+            "units_outstanding=excluded.units_outstanding,nav_per_unit=excluded.nav_per_unit,"
+            "daily_return=excluded.daily_return,levered_return=excluded.levered_return,"
+            "mgmt_fee_accrued=excluded.mgmt_fee_accrued,source=excluded.source",
+            (
+                row["date"].isoformat(),
+                now,
+                row["nav"],
+                row["nav"],
+                0,
+                0,
+                0,
+                row["flow"],
+                row["nav"] / navpus[index],
+                navpus[index],
+                daily_return,
+                None,
+                0,
+                "imported",
+            ),
+        )
+    conn.commit()
+    return {
+        "imported": len(normalized),
+        "first": normalized[0]["date"],
+        "last": normalized[-1]["date"],
+        "continuity": continuity,
+        "navpus": navpus,
+    }
+
+
+async def backfill_benchmark(conn, dates: list[date]) -> int:
+    symbol = str(get_setting(conn, "benchmark_symbol", "") or "").strip().upper()
+    if not symbol or not dates:
+        return 0
+    try:
+        closes = await fetch_benchmark_closes(
+            symbol, min(dates) - timedelta(days=7), max(dates) + timedelta(days=1)
+        )
+    except (OSError, RuntimeError):
+        return 0
+    stored = 0
+    for target in dates:
+        value = closes.get(target.isoformat())
+        if value is None:
+            for offset in range(1, 8):
+                value = closes.get((target - timedelta(days=offset)).isoformat())
+                if value is not None:
+                    break
+        if value is None:
+            continue
+        conn.execute(
+            "INSERT INTO benchmark_closes(symbol,date,close) VALUES (?,?,?) "
+            "ON CONFLICT(symbol,date) DO UPDATE SET close=excluded.close",
+            (symbol, target.isoformat(), value),
+        )
+        stored += 1
+    conn.commit()
+    return stored
 
 
 def history_csv(conn) -> str:

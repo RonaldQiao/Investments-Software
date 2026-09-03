@@ -51,6 +51,15 @@ Each fund is a separate SQLite file. Use the header selector or Settings →
 New fund to create and switch funds; `LEDGER_DB` still points to the default
 fund, and `python -m app.snapshot --fund x` targets one fund explicitly.
 
+## Track record import
+
+History accepts CSV files with `date,nav,flow` columns; dates may use
+`YYYY-MM-DD` or `M/D/YY`, and currency-formatted NAV values are supported.
+Flow is capital added (+) or withdrawn (−) during the period ending on that
+date. Imported NAV/unit history starts at the configured inception level and
+scales to the first live snapshot when one exists; otherwise its final level
+becomes the next live inception level.
+
 Use `make backup` (or `POST /backup` in Settings) to create a SQLite backup in
 `data/backups/`. Only the newest 20 backups are retained. GitHub Actions runs
 the test suite on every push and pull request.
