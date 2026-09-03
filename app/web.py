@@ -78,6 +78,18 @@ def expiry_days(value):
         return None
 
 
+def et_timestamp(value):
+    if not value:
+        return "—"
+    try:
+        parsed = datetime.fromisoformat(str(value))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ZoneInfo("America/New_York"))
+        return parsed.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return str(value)
+
+
 def flash_redirect(path, key, message):
     return RedirectResponse(f"{path}?{key}={quote(str(message))}", status_code=303)
 
@@ -89,6 +101,7 @@ templates.env.filters["fee_pct"] = fee_pct
 templates.env.filters["signed_number"] = signed_number
 templates.env.filters["age"] = age
 templates.env.filters["expiry_days"] = expiry_days
+templates.env.filters["et_timestamp"] = et_timestamp
 
 
 def render(request: Request, name: str, status_code: int = 200, **kwargs):
