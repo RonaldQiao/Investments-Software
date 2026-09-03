@@ -91,7 +91,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         CREATE TABLE IF NOT EXISTS fee_events (
           id INTEGER PRIMARY KEY,
           ts TEXT NOT NULL,
-          kind TEXT NOT NULL CHECK(kind IN ('mgmt','perf')),
+          kind TEXT NOT NULL CHECK(kind IN ('mgmt','perf','settle')),
           amount REAL NOT NULL,
           hwm_before REAL,
           hwm_after REAL,

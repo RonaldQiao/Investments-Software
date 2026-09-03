@@ -18,6 +18,10 @@ def main():
     conn.execute("DELETE FROM cash_flows")
     conn.execute("DELETE FROM prices")
     conn.execute("DELETE FROM instruments")
+    conn.execute("INSERT OR IGNORE INTO lps(name,is_gp) VALUES ('Investor A',0)")
+    conn.execute("INSERT OR IGNORE INTO lps(name,is_gp) VALUES ('GP',1)")
+    conn.execute("UPDATE lps SET is_gp=0 WHERE name='Principal'")
+    conn.execute("UPDATE lps SET is_gp=1 WHERE name='GP'")
     now = datetime.now(timezone.utc).isoformat()
     specs = [
         ("AAPL", "Apple", "equity", 1, "yahoo", None, None),
@@ -47,6 +51,10 @@ def main():
             ),
         )
         ids[symbol] = cursor.lastrowid
+    lp_id = conn.execute("SELECT id FROM lps WHERE name='Principal'").fetchone()["id"]
+    record_cash_flow(conn, now, 1_000_000, lp_id, "Initial demo capital")
+    investor_id = conn.execute("SELECT id FROM lps WHERE name='Investor A'").fetchone()["id"]
+    record_cash_flow(conn, now, 500_000, investor_id, "Investor A capital")
     trades = [
         ("AAPL", "BUY", 200, 190),
         ("NVDA", "SELL", 50, 120),
@@ -63,8 +71,6 @@ def main():
             (ids[symbol], now, side, quantity, price),
         )
     conn.commit()
-    lp_id = conn.execute("SELECT id FROM lps WHERE name='Principal'").fetchone()["id"]
-    record_cash_flow(conn, now, 1_000_000, lp_id, "Initial demo capital")
     failed = asyncio.run(refresh_prices(conn))
     conn.close()
     print(f"Seeded demo book. Failed price symbols: {', '.join(failed) or 'none'}")

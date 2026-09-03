@@ -85,3 +85,24 @@ def test_cash_flow_issues_units_without_changing_return():
     record_cash_flow(conn, "2024-01-03T12:00:00", 500000, lp_id, "additional")
     snapshot = take_snapshot(conn, date(2024, 1, 3), "manual", refresh=False)
     assert snapshot["daily_return"] == pytest.approx(0.1)
+
+
+def test_last_trading_day_crystallizes_performance_fee():
+    conn, lp_id = database()
+    set_setting(conn, "mgmt_fee_bps", 0)
+    instrument = conn.execute(
+        "INSERT INTO instruments(symbol,name,asset_class,pricing_source,manual_mark) "
+        "VALUES ('TEST','Test','equity','manual',100)"
+    )
+    conn.execute(
+        "INSERT INTO trades(instrument_id,ts,side,quantity,price) VALUES (?,?,'BUY',1000,100)",
+        (instrument.lastrowid, "2026-01-02"),
+    )
+    record_cash_flow(conn, "2026-01-02", 1_000_000, lp_id, "test")
+    take_snapshot(conn, date(2026, 1, 2), refresh=False)
+    conn.execute("UPDATE instruments SET manual_mark=200")
+    snapshot = take_snapshot(conn, date(2026, 12, 31), refresh=False)
+    assert snapshot["nav_per_unit"] < 1100
+    assert conn.execute(
+        "SELECT COUNT(*) FROM fee_events WHERE kind='perf'"
+    ).fetchone()[0] == 1

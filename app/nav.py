@@ -69,6 +69,7 @@ def compute_portfolio(conn):
     cash = float(flows) + cash_from_trades(trades)
     net_exposure = gross_long - gross_short
     nav = cash + net_exposure
+    fee_liability = float(get_setting(conn, "fee_liability", 0) or 0)
     leverage = float(get_setting(conn, "leverage", 1.0))
     return {
         "positions": sorted(rows, key=lambda row: abs(row["market_value"]), reverse=True),
@@ -77,6 +78,9 @@ def compute_portfolio(conn):
         "gross_short": gross_short,
         "net_exposure": net_exposure,
         "nav": nav,
+        "gross_nav": nav,
+        "fee_liability": fee_liability,
+        "net_nav": nav - fee_liability,
         "leverage_target": leverage,
         "target_gross": leverage * nav,
         "current_gross_leverage": (gross_long + gross_short) / nav if nav else 0,
@@ -98,10 +102,9 @@ def take_snapshot(
     portfolio = compute_portfolio(conn)
     gross_nav = float(portfolio["nav"])
     liability = float(get_setting(conn, "fee_liability", 0) or 0)
-    first_snapshot = (
-        existing is None
-        and conn.execute("SELECT 1 FROM nav_snapshots LIMIT 1").fetchone() is None
-    )
+    first_snapshot = existing is None and not conn.execute(
+        "SELECT 1 FROM nav_snapshots LIMIT 1"
+    ).fetchone()
     if existing is None and not first_snapshot:
         fee = gross_nav * float(get_setting(conn, "mgmt_fee_bps", 200)) / 10000 / 252
         liability += fee
@@ -115,7 +118,6 @@ def take_snapshot(
                 f"Management fee for {snapshot_date.isoformat()}",
             ),
         )
-    net_nav = gross_nav - liability
     units = float(
         conn.execute("SELECT COALESCE(SUM(units),0) units FROM lp_units").fetchone()[
             "units"
@@ -123,12 +125,18 @@ def take_snapshot(
     )
     if units == 0 and gross_nav > 0:
         inception = float(get_setting(conn, "inception_nav_per_unit", 1000))
-        units = net_nav / inception if net_nav else 0
+        units = (gross_nav - liability) / inception if gross_nav - liability > 0 else 0
         lp_id = conn.execute("SELECT id FROM lps WHERE name='Principal'").fetchone()["id"]
         conn.execute(
             "INSERT INTO lp_units(lp_id,ts,units,nav_per_unit) VALUES (?,?,?,?)",
             (lp_id, datetime.now(timezone.utc).isoformat(), units, inception),
         )
+    if existing is None and _is_last_trading_day_of_year(snapshot_date):
+        from .fees import crystallize_perf_fee
+
+        crystallize_perf_fee(conn, datetime.now(timezone.utc))
+        liability = float(get_setting(conn, "fee_liability", 0) or 0)
+    net_nav = gross_nav - liability
     nav_per_unit = net_nav / units if units else 0
     previous = conn.execute(
         "SELECT nav_per_unit FROM nav_snapshots WHERE date<? ORDER BY date DESC LIMIT 1",
@@ -150,11 +158,22 @@ def take_snapshot(
         "SELECT COALESCE(SUM(amount),0) amount FROM cash_flows WHERE substr(ts,1,10)=?",
         (snapshot_date.isoformat(),),
     ).fetchone()["amount"]
+    mgmt_fee_accrued = (
+        float(
+            conn.execute(
+                "SELECT amount FROM fee_events WHERE kind='mgmt' AND note=? "
+                "ORDER BY id DESC LIMIT 1",
+                (f"Management fee for {snapshot_date.isoformat()}",),
+            ).fetchone()["amount"]
+        )
+        if existing is None and not first_snapshot
+        else (0.0 if first_snapshot else float(existing["mgmt_fee_accrued"]))
+    )
     values = {
         "date": snapshot_date.isoformat(),
         "ts": datetime.now(timezone.utc).isoformat(),
         "nav": net_nav,
-        "cash": portfolio["cash"] - liability,
+        "cash": portfolio["cash"],
         "gross_long": portfolio["gross_long"],
         "gross_short": portfolio["gross_short"],
         "net_exposure": portfolio["net_exposure"],
@@ -163,17 +182,7 @@ def take_snapshot(
         "nav_per_unit": nav_per_unit,
         "daily_return": daily_return,
         "levered_return": levered_return,
-            "mgmt_fee_accrued": (
-                float(
-                    conn.execute(
-                        "SELECT amount FROM fee_events WHERE kind='mgmt' AND note=? "
-                        "ORDER BY id DESC LIMIT 1",
-                        (f"Management fee for {snapshot_date.isoformat()}",),
-                    ).fetchone()["amount"]
-                )
-                if existing is None and not first_snapshot
-                else (0.0 if first_snapshot else float(existing["mgmt_fee_accrued"]))
-            ),
+        "mgmt_fee_accrued": mgmt_fee_accrued,
         "source": source,
     }
     conn.execute(
@@ -192,6 +201,20 @@ def take_snapshot(
     )
     conn.commit()
     return dict(conn.execute("SELECT * FROM nav_snapshots WHERE date=?", (values["date"],)).fetchone())
+
+
+def _is_last_trading_day_of_year(snapshot_date):
+    import holidays
+
+    holidays_nyse = holidays.financial_holidays("NYSE")
+    if snapshot_date.weekday() >= 5 or snapshot_date in holidays_nyse:
+        return False
+    following = snapshot_date.fromordinal(snapshot_date.toordinal() + 1)
+    while following.year == snapshot_date.year:
+        if following.weekday() < 5 and following not in holidays_nyse:
+            return False
+        following = following.fromordinal(following.toordinal() + 1)
+    return True
 
 
 def history_series(conn):
