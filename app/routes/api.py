@@ -76,6 +76,8 @@ async def instruments_create_api(request: Request):
     if avg_price is not None and avg_price < 0:
         return JSONResponse({"error": "avg_price cannot be negative"}, status_code=400)
     conn = get_conn()
+    manual_mark = payload.get("manual_mark")
+    manual_mark_at = datetime.now(UTC).isoformat() if manual_mark not in (None, "") else None
     fields = (
         payload.get("symbol", "").strip().upper(),
         payload.get("name", "").strip(),
@@ -84,7 +86,8 @@ async def instruments_create_api(request: Request):
         float(payload.get("multiplier", 1)),
         payload.get("pricing_source", "yahoo"),
         payload.get("yahoo_symbol") or None,
-        payload.get("manual_mark"),
+        manual_mark,
+        manual_mark_at,
         payload.get("notes", ""),
         payload.get("underlying") or None,
         payload.get("expiry") or None,
@@ -93,8 +96,8 @@ async def instruments_create_api(request: Request):
     )
     cursor = conn.execute(
         "INSERT INTO instruments(symbol,name,asset_class,currency,multiplier,pricing_source,"
-        "yahoo_symbol,manual_mark,notes,underlying,expiry,strike,option_type) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "yahoo_symbol,manual_mark,manual_mark_at,notes,underlying,expiry,strike,option_type) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         fields,
     )
     if quantity is not None:

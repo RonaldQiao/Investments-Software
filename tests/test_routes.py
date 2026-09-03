@@ -273,14 +273,34 @@ def test_manual_instrument_creation_does_not_fetch_yahoo(client, monkeypatch):
             "name": "Manual instrument",
             "asset_class": "other",
             "pricing_source": "manual",
-            "manual_mark": "10",
+            "manual_mark": "50",
             "quantity": "1",
-            "avg_price": "10",
+            "avg_price": "50",
         },
         follow_redirects=False,
     )
     assert response.status_code == 303
     assert calls == 0
+    instrument = next(
+        row for row in client.get("/api/instruments").json() if row["symbol"] == "MANUAL"
+    )
+    assert instrument["manual_mark"] == 50
+    assert instrument["manual_mark_at"] is not None
+
+
+def test_api_manual_mark_has_timestamp(client):
+    response = client.post(
+        "/api/instruments",
+        json={
+            "symbol": "API-MANUAL",
+            "name": "API manual instrument",
+            "asset_class": "other",
+            "pricing_source": "manual",
+            "manual_mark": 50,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["manual_mark_at"] is not None
 
 
 def test_dashboard_speed_guard(client):

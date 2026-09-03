@@ -173,7 +173,10 @@ def test_trade_csv_round_trip_and_edit_warning(client, tmp_path):
         assert "ok=" in imported.headers["location"]
         assert fresh_client.get("/trades").status_code == 200
         fresh_positions = fresh_client.get("/api/portfolio").json()["positions"]
-    db.DB_PATH = original_db
+        db.DB_PATH = original_db
+    for rows in (original_positions, fresh_positions):
+        for row in rows:
+            row["manual_mark_at"] = None
     assert fresh_positions == original_positions
     edited = client.post(
         f"/instruments/{instrument['id']}/edit",

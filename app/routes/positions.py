@@ -59,10 +59,11 @@ async def add_instrument(
         return flash_redirect("/positions", "error", "Avg price cannot be negative")
     conn = get_conn()
     try:
+        manual_mark_value = float(manual_mark) if manual_mark.strip() else None
         cursor = conn.execute(
             "INSERT INTO instruments(symbol,name,asset_class,currency,multiplier,pricing_source,"
-            "yahoo_symbol,manual_mark,notes,underlying,expiry,strike,option_type) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "yahoo_symbol,manual_mark,manual_mark_at,notes,underlying,expiry,strike,option_type) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 symbol.strip().upper(),
                 name.strip(),
@@ -71,7 +72,8 @@ async def add_instrument(
                 multiplier,
                 pricing_source,
                 yahoo_symbol.strip() or None,
-                float(manual_mark) if manual_mark.strip() else None,
+                manual_mark_value,
+                datetime.now(UTC).isoformat() if manual_mark_value is not None else None,
                 notes.strip(),
                 underlying.strip() or None,
                 expiry.strip() or None,

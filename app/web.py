@@ -36,6 +36,10 @@ def number(value, decimals=2):
     return f"{sign}{abs(value):,.{decimals}f}"
 
 
+def input_number(value):
+    return "" if value is None else format(float(value), ".12g")
+
+
 def percent(value):
     if value is None:
         return "—"
@@ -95,6 +99,7 @@ def flash_redirect(path, key, message):
 
 
 templates.env.filters["number"] = number
+templates.env.filters["input_number"] = input_number
 templates.env.filters["percent"] = percent
 templates.env.filters["fee_bps"] = fee_bps
 templates.env.filters["fee_pct"] = fee_pct

@@ -11,6 +11,15 @@ if(addInstrument){
   const status=document.querySelector("#lookup-status");
   [assetClass,currency].forEach(field=>field.addEventListener("input",()=>{field.dataset.touched="1";}));
   let lastLookup="";
+  let autoYahooSymbol=null;
+  let autoPricePlaceholder=null;
+  const resetLookup=()=>{
+    if(autoYahooSymbol!==null&&yahooSymbol.value===autoYahooSymbol)yahooSymbol.value="";
+    if(autoPricePlaceholder!==null&&avgPrice.placeholder===autoPricePlaceholder)avgPrice.placeholder="";
+    autoYahooSymbol=null;
+    autoPricePlaceholder=null;
+    lastLookup="";
+  };
   const lookup=async()=>{
     const value=symbol.value.trim().toUpperCase();
     if(!value||value===lastLookup)return;
@@ -18,19 +27,20 @@ if(addInstrument){
     status.textContent="";
     try{
       const response=await fetch(`/api/lookup?symbol=${encodeURIComponent(value)}`);
-      if(response.status===404){status.textContent="not on Yahoo";return;}
-      if(!response.ok)return;
+      if(response.status===404){resetLookup();status.textContent="not on Yahoo";return;}
+      if(!response.ok){resetLookup();return;}
       const meta=await response.json();
       if(!name.value)name.value=meta.name||"";
       if(!assetClass.dataset.touched)assetClass.value=meta.asset_class;
       if(!currency.dataset.touched)currency.value=meta.currency;
-      if(!yahooSymbol.value)yahooSymbol.value=meta.symbol;
+      if(!yahooSymbol.value){yahooSymbol.value=meta.symbol;autoYahooSymbol=meta.symbol;}
       if(meta.price!=null){
         const price=Number(meta.price);
         avgPrice.placeholder=price.toFixed(2);
+        autoPricePlaceholder=avgPrice.placeholder;
         status.textContent=`Yahoo · ${price.toFixed(2)} ${meta.currency}`;
       }
-    }catch(error){status.textContent="";}
+    }catch(error){resetLookup();status.textContent="";}
   };
   symbol.addEventListener("change",lookup);
   symbol.addEventListener("blur",lookup);

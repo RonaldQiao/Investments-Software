@@ -8,7 +8,7 @@
 {% for p in positions %}<tr>
 <td class="instrument-name"><span>{{ p.symbol }}</span><small>{{ p.name }}</small>{% if p.expiry %}<small class="{{ 'expired' if p.expiry|expiry_days < 0 }}">exp {{ p.expiry }} · {{ p.expiry|expiry_days }}d</small>{% endif %}</td>
 <td>{{ p.side }}</td><td class="num">{{ p.qty|number(4) }}</td><td class="num">{{ p.avg_price|number }}</td>
-<td class="num">{% if p.pricing_source == "manual" %}<input name="mark_{{ p.instrument_id }}" type="number" step="any" value="{{ p.mark if p.mark is not none else '' }}" required>{% else %}{% if p.price_failed or p.mark is none %}—<small class="price-meta">no price</small>{% else %}{{ p.mark|number }}{% if p.price_age_seconds is not none and p.price_age_seconds > 86400 %}<small class="price-meta">{{ p.price_age_seconds|age }}</small>{% endif %}{% endif %}{% endif %}</td>
+<td class="num">{% if p.pricing_source == "manual" %}<input name="mark_{{ p.instrument_id }}" type="number" step="any" value="{{ p.mark|input_number }}" required>{% else %}{% if p.price_failed or p.mark is none %}—<small class="price-meta">no price</small>{% else %}{{ p.mark|number }}{% if p.price_age_seconds is not none and p.price_age_seconds > 86400 %}<small class="price-meta">{{ p.price_age_seconds|age }}</small>{% endif %}{% endif %}{% endif %}</td>
 <td>{% if p.pricing_source == "manual" %}<input name="mark_date_{{ p.instrument_id }}" type="date" value="{{ p.manual_mark_at[:10] if p.manual_mark_at else '' }}">{% else %}—{% endif %}</td>
 </tr>{% endfor %}</tbody></table>
 <button>Save manual marks</button>
