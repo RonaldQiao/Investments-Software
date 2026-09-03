@@ -2,7 +2,7 @@
 {% block actions %}<form class="inline" method="post" action="/api/prices/refresh" onsubmit="return refreshPrices(event)"><button>Refresh prices</button></form>{% endblock %}
 {% block content %}
 <section class="headline">
-  <div><label>NAV</label><strong>{{ portfolio.nav|number }}</strong></div>
+  <div><label>NAV (net)</label><strong>{{ portfolio.net_nav|number }}</strong></div>
   <div><label>Cash</label><strong>{{ portfolio.cash|number }}</strong></div>
   <div><label>Gross long</label><strong>{{ portfolio.gross_long|number }}</strong></div>
   <div><label>Gross short</label><strong>{{ portfolio.gross_short|number }}</strong></div>
@@ -10,6 +10,7 @@
   <div><label>Gross leverage / target</label><strong>{{ portfolio.current_gross_leverage|number(2) }}× / {{ portfolio.leverage_target|number(1) }}×</strong></div>
   <div><label>Fees accrued</label><strong>{{ portfolio.fees_accrued|number }}</strong></div>
 </section>
+<p class="meta">Gross NAV {{ portfolio.gross_nav|number }} · Fees accrued {{ portfolio.fee_liability|number }}</p>
 <p class="meta">Last price refresh: {{ latest_refresh or "Never" }}</p>
 <p class="meta">Last snapshot: {% if latest_snapshot %}{{ latest_snapshot.date }} · NAV/unit {{ latest_snapshot.nav_per_unit|number }} · {{ latest_snapshot.daily_return|percent }}{% else %}Never{% endif %}</p>
 <table><thead><tr><th>Instrument</th><th>Side</th><th>Qty</th><th>Avg</th><th>Mark</th><th>Market value</th><th>Unrealized</th></tr></thead>

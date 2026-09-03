@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -12,6 +13,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .db import get_conn, get_setting, init_db, set_setting
+from .fees import (
+    crystallize_perf_fee,
+    fee_scenario,
+    ownership,
+    record_cash_flow,
+    settle_fees,
+)
 from .nav import compute_portfolio, history_csv, history_series, take_snapshot
 from .pricing import refresh_prices
 from .positions import build_positions
@@ -63,9 +71,12 @@ templates.env.filters["number"] = number
 templates.env.filters["percent"] = percent
 
 
-def render(request: Request, name: str, **kwargs):
+def render(request: Request, name: str, status_code: int = 200, **kwargs):
     return templates.TemplateResponse(
-        request=request, name=name, context=context(request, **kwargs)
+        request=request,
+        name=name,
+        context=context(request, **kwargs),
+        status_code=status_code,
     )
 
 
@@ -129,11 +140,196 @@ def settings_page(request: Request):
     return render(request, "settings.html", settings=settings)
 
 
+def capital_context(conn):
+    flows = row_dicts(
+        conn.execute(
+            "SELECT c.*, l.name lp_name, u.units, u.nav_per_unit "
+            "FROM cash_flows c LEFT JOIN lps l ON l.id=c.lp_id "
+            "LEFT JOIN lp_units u ON u.cash_flow_id=c.id "
+            "ORDER BY c.ts DESC,c.id DESC"
+        )
+    )
+    for flow in flows:
+        flow["date"] = flow["ts"][:10]
+    lps = row_dicts(conn.execute("SELECT * FROM lps ORDER BY name"))
+    totals = {
+        "contributed": float(
+            conn.execute(
+                "SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END),0) FROM cash_flows"
+            ).fetchone()[0]
+        ),
+        "withdrawn": float(
+            conn.execute(
+                "SELECT COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END),0) FROM cash_flows"
+            ).fetchone()[0]
+        ),
+    }
+    totals["net_capital"] = totals["contributed"] - totals["withdrawn"]
+    totals["units"] = float(
+        conn.execute("SELECT COALESCE(SUM(units),0) FROM lp_units").fetchone()[0]
+    )
+    totals["nav_per_unit"] = ownership(conn)["nav_per_unit"]
+    return {"flows": flows, "lps": lps, "totals": totals}
+
+
 @app.get("/capital", response_class=HTMLResponse)
+def capital_page(request: Request, error: str | None = None):
+    conn = get_conn()
+    data = capital_context(conn)
+    conn.close()
+    return render(
+        request,
+        "capital.html",
+        error=error,
+        today=datetime.now(ZoneInfo("America/New_York")).date().isoformat(),
+        **data,
+    )
+
+
+@app.post("/capital")
+def add_capital_flow(
+    request: Request,
+    flow_date: str = Form(""),
+    lp_id: str = Form(""),
+    new_lp: str = Form(""),
+    flow_type: str = Form("Contribution"),
+    amount: float = Form(...),
+    note: str = Form(""),
+):
+    conn = get_conn()
+    try:
+        if lp_id == "new":
+            name = new_lp.strip()
+            if not name:
+                raise ValueError("Enter a name for the new LP")
+            cursor = conn.execute("INSERT INTO lps(name,is_gp) VALUES (?,0)", (name,))
+            selected_lp = cursor.lastrowid
+        else:
+            selected_lp = int(lp_id)
+        if amount <= 0:
+            raise ValueError("Amount must be greater than zero")
+        timestamp = flow_date.strip() or datetime.now(timezone.utc).date().isoformat()
+        signed_amount = amount if flow_type == "Contribution" else -amount
+        record_cash_flow(conn, timestamp, signed_amount, selected_lp, note.strip())
+    except (ValueError, TypeError, sqlite3.IntegrityError) as exc:
+        data = capital_context(conn)
+        conn.close()
+        return render(
+            request,
+            "capital.html",
+            status_code=400,
+            error=str(exc),
+            today=datetime.now(ZoneInfo("America/New_York")).date().isoformat(),
+            **data,
+        )
+    conn.close()
+    return RedirectResponse("/capital", status_code=303)
+
+
+@app.post("/capital/{flow_id}/delete")
+def delete_capital_flow(flow_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM lp_units WHERE cash_flow_id=?", (flow_id,))
+    conn.execute("DELETE FROM cash_flows WHERE id=?", (flow_id,))
+    conn.commit()
+    conn.close()
+    return RedirectResponse("/capital", status_code=303)
+
+
+def fees_context(conn, request: Request):
+    calc = None
+    params = request.query_params
+    if params.get("starting_nav"):
+        try:
+            calc = fee_scenario(
+                params["starting_nav"],
+                params.get("gross_return_pct", params.get("gross_return", 0)),
+                params.get("mgmt_pct", params.get("mgmt", 0)),
+                params.get("perf_pct", params.get("perf", 0)),
+                params.get("hwm_per_unit", params.get("hwm", 1000)),
+                params.get("current_nav_per_unit", params.get("current_nav", 1000)),
+            )
+        except (TypeError, ValueError):
+            calc = None
+    settings = {
+        key: get_setting(conn, key, default)
+        for key, default in (
+            ("mgmt_fee_bps", "200"),
+            ("perf_fee_pct", "20"),
+            ("hwm_per_unit", "1000"),
+            ("fee_liability", "0"),
+        )
+    }
+    return {
+        "settings": settings,
+        "lps": row_dicts(conn.execute("SELECT * FROM lps ORDER BY name")),
+        "ownership": ownership(conn),
+        "mgmt_accrued": float(
+            conn.execute("SELECT COALESCE(SUM(amount),0) FROM fee_events WHERE kind='mgmt'").fetchone()[0]
+        ),
+        "perf_accrued": float(
+            conn.execute("SELECT COALESCE(SUM(amount),0) FROM fee_events WHERE kind='perf'").fetchone()[0]
+        ),
+        "calc": calc,
+    }
+
+
 @app.get("/fees", response_class=HTMLResponse)
-def placeholder_page(request: Request):
-    section = request.url.path.strip("/").title()
-    return render(request, "placeholder.html", section=section)
+def fees_page(request: Request, error: str | None = None):
+    conn = get_conn()
+    data = fees_context(conn, request)
+    conn.close()
+    return render(request, "fees.html", error=error, **data)
+
+
+@app.post("/fees/terms")
+def save_fee_terms(
+    gp_id: str = Form(""),
+    mgmt_fee_bps: float = Form(...),
+    perf_fee_pct: float = Form(...),
+):
+    conn = get_conn()
+    set_setting(conn, "mgmt_fee_bps", mgmt_fee_bps)
+    set_setting(conn, "perf_fee_pct", perf_fee_pct)
+    if gp_id:
+        conn.execute("UPDATE lps SET is_gp=0")
+        conn.execute("UPDATE lps SET is_gp=1 WHERE id=?", (int(gp_id),))
+        conn.commit()
+    conn.close()
+    return RedirectResponse("/fees", status_code=303)
+
+
+@app.post("/fees/lps")
+def add_lp(name: str = Form(...)):
+    conn = get_conn()
+    try:
+        conn.execute("INSERT INTO lps(name,is_gp) VALUES (?,0)", (name.strip(),))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        pass
+    conn.close()
+    return RedirectResponse("/fees", status_code=303)
+
+
+@app.post("/fees/crystallize")
+def crystallize_fees(request: Request):
+    conn = get_conn()
+    crystallize_perf_fee(conn, datetime.now(timezone.utc))
+    conn.close()
+    return RedirectResponse("/fees", status_code=303)
+
+
+@app.post("/fees/settle")
+def settle_fee_liability(request: Request):
+    conn = get_conn()
+    try:
+        settle_fees(conn, datetime.now(timezone.utc))
+    except ValueError as exc:
+        data = fees_context(conn, request)
+        conn.close()
+        return render(request, "fees.html", status_code=400, error=str(exc), **data)
+    conn.close()
+    return RedirectResponse("/fees", status_code=303)
 
 
 @app.get("/history", response_class=HTMLResponse)

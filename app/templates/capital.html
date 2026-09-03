@@ -1,0 +1,25 @@
+{% extends "base.html" %}{% set title="Capital" %}
+{% block content %}
+<p class="meta">Flows issue or redeem units at the current NAV/unit, so they never affect the return series.</p>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<section class="headline">
+  <div><label>Total contributed</label><strong>{{ totals.contributed|number }}</strong></div>
+  <div><label>Total withdrawn</label><strong>{{ totals.withdrawn|number }}</strong></div>
+  <div><label>Net capital</label><strong>{{ totals.net_capital|number }}</strong></div>
+  <div><label>Units outstanding</label><strong>{{ totals.units|number(4) }}</strong></div>
+  <div><label>Current NAV/unit</label><strong>{{ totals.nav_per_unit|number }}</strong></div>
+</section>
+<h2>Record flow</h2>
+<form class="form-grid" method="post" action="/capital">
+  <label>Date<input name="flow_date" type="date" value="{{ today }}"></label>
+  <label>LP<select name="lp_id">{% for lp in lps %}<option value="{{ lp.id }}">{{ lp.name }}</option>{% endfor %}<option value="new">New LP…</option></select></label>
+  <label>New LP name<input name="new_lp" placeholder="Only for New LP…"></label>
+  <label>Type<select name="flow_type"><option>Contribution</option><option>Withdrawal</option></select></label>
+  <label>Amount<input name="amount" type="number" min="0" step="0.01" required></label>
+  <label>Note<input name="note"></label>
+  <div><label>&nbsp;</label><button>Record flow</button></div>
+</form>
+<table><thead><tr><th>Date</th><th>LP</th><th>Amount</th><th>Units issued/redeemed</th><th>NAV/unit</th><th>Note</th><th></th></tr></thead><tbody>
+{% for flow in flows %}<tr><td>{{ flow.date }}</td><td>{{ flow.lp_name or "—" }}</td><td class="num {{ 'negative' if flow.amount < 0 }}">{{ flow.amount|number }}</td><td class="num {{ 'negative' if flow.units is not none and flow.units < 0 }}">{{ (flow.units or 0)|number(4) }}</td><td class="num">{{ (flow.nav_per_unit or 0)|number }}</td><td>{{ flow.note or "" }}</td><td><form method="post" action="/capital/{{ flow.id }}/delete"><button>Delete</button></form></td></tr>{% else %}<tr><td colspan="7" class="empty">No capital flows.</td></tr>{% endfor %}
+</tbody></table>
+{% endblock %}

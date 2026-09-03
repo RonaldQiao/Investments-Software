@@ -1,0 +1,36 @@
+{% extends "base.html" %}{% set title="Fees" %}
+{% block content %}
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<h2>Terms</h2>
+<form class="form-grid" method="post" action="/fees/terms">
+  <label>Management fee (bps)<input name="mgmt_fee_bps" type="number" step="1" min="0" value="{{ settings.mgmt_fee_bps }}"></label>
+  <label>Performance fee (%)<input name="perf_fee_pct" type="number" step=".1" min="0" value="{{ settings.perf_fee_pct }}"></label>
+  <label>HWM NAV/unit<input value="{{ settings.hwm_per_unit }}" readonly></label>
+  <label>GP LP<select name="gp_id"><option value="">None</option>{% for lp in lps %}<option value="{{ lp.id }}" {{ "selected" if lp.is_gp else "" }}>{{ lp.name }}</option>{% endfor %}</select></label>
+  <div><label>&nbsp;</label><button>Save terms</button></div>
+</form>
+<form class="inline" method="post" action="/fees/lps"><input name="name" placeholder="New LP name" required><button>Add LP</button></form>
+<h2>Ownership</h2>
+<table><thead><tr><th>LP</th><th>Units</th><th>% of fund</th><th>Current value</th><th>Contributed</th><th>Withdrawn</th><th>P&amp;L</th></tr></thead><tbody>
+{% for lp in ownership.rows %}<tr><td>{{ lp.name }}{% if lp.is_gp %} <small>GP</small>{% endif %}</td><td class="num">{{ lp.units|number(4) }}</td><td class="num">{{ (lp.percentage * 100)|number(2) }}%</td><td class="num">{{ lp.value|number }}</td><td class="num">{{ lp.contributed|number }}</td><td class="num">{{ lp.withdrawn|number }}</td><td class="num {{ 'negative' if lp.pnl < 0 }}">{{ lp.pnl|number }}</td></tr>{% else %}<tr><td colspan="7" class="empty">No LPs.</td></tr>{% endfor %}
+<tr><th>Total</th><th class="num">{{ ownership.total_units|number(4) }}</th><th class="num">100.00%</th><th class="num">{{ ownership.total_value|number }}</th><th></th><th></th><th></th></tr>
+</tbody></table>
+<h2>Accruals</h2>
+<section class="headline compact">
+  <div><label>Fee liability outstanding</label><strong>{{ settings.fee_liability|number }}</strong></div>
+  <div><label>Management fees accrued</label><strong>{{ mgmt_accrued|number }}</strong></div>
+  <div><label>Performance fees crystallized</label><strong>{{ perf_accrued|number }}</strong></div>
+</section>
+<p class="actions"><form class="inline" method="post" action="/fees/crystallize"><button>Crystallize performance fee now</button></form><form class="inline" method="post" action="/fees/settle"><button>Pay fees to GP</button></form></p>
+<h2>Calculator</h2>
+<form class="form-grid calculator" method="get" action="/fees">
+  <label>Starting NAV<input name="starting_nav" type="number" step=".01" value="{{ request.query_params.get('starting_nav', '') }}" required></label>
+  <label>Gross return (%)<input name="gross_return_pct" type="number" step=".01" value="{{ request.query_params.get('gross_return_pct', '') }}" required></label>
+  <label>Management (%)<input name="mgmt_pct" type="number" step=".01" value="{{ request.query_params.get('mgmt_pct', '') }}" required></label>
+  <label>Performance (%)<input name="perf_pct" type="number" step=".01" value="{{ request.query_params.get('perf_pct', '') }}" required></label>
+  <label>HWM NAV/unit<input name="hwm_per_unit" type="number" step=".01" value="{{ request.query_params.get('hwm_per_unit', '1000') }}" required></label>
+  <label>Current NAV/unit<input name="current_nav_per_unit" type="number" step=".01" value="{{ request.query_params.get('current_nav_per_unit', '') }}" required></label>
+  <div><label>&nbsp;</label><button>Calculate</button></div>
+</form>
+{% if calc %}<table class="calc-results"><tbody><tr><th>Gross P&amp;L</th><td class="num">{{ calc.gross_pnl|number }}</td></tr><tr><th>Management fee</th><td class="num">{{ calc.mgmt_fee|number }}</td></tr><tr><th>Performance fee</th><td class="num">{{ calc.perf_fee|number }}</td></tr><tr><th>Net to LPs</th><td class="num">{{ calc.net_to_lps|number }}</td></tr><tr><th>Net return</th><td class="num">{{ calc.net_return_pct|number(2) }}%</td></tr><tr><th>GP take</th><td class="num">{{ calc.gp_take|number }}</td></tr></tbody></table>{% endif %}
+{% endblock %}
