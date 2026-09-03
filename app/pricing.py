@@ -8,6 +8,17 @@ import httpx
 
 from .db import set_setting
 
+YAHOO_INSTRUMENT_TYPES = {
+    "EQUITY": "equity",
+    "ETF": "etf",
+    "MUTUALFUND": "etf",
+    "FUTURE": "future",
+    "CRYPTOCURRENCY": "crypto",
+    "CURRENCY": "fx",
+    "OPTION": "option",
+    "INDEX": "other",
+}
+
 
 def occ_symbol(underlying, expiry, option_type, strike):
     if isinstance(expiry, datetime):
@@ -66,6 +77,38 @@ async def fetch_yahoo(symbols: list[str]) -> dict[str, float | None]:
     ) as client:
         results = await asyncio.gather(*(fetch(client, symbol) for symbol in symbols))
     return dict(results)
+
+
+async def fetch_yahoo_meta(symbol: str) -> dict | None:
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        async with httpx.AsyncClient(
+            headers=headers, timeout=10.0, follow_redirects=True
+        ) as client:
+            response = await client.get(
+                f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}",
+                params={"range": "1d", "interval": "1d"},
+            )
+            response.raise_for_status()
+            result = response.json().get("chart", {}).get("result") or []
+            if not result:
+                return None
+            meta = result[0]["meta"]
+            yahoo_symbol = meta["symbol"]
+            if not yahoo_symbol:
+                return None
+            price = meta.get("regularMarketPrice")
+            return {
+                "symbol": yahoo_symbol,
+                "name": meta.get("shortName") or meta.get("longName") or "",
+                "asset_class": YAHOO_INSTRUMENT_TYPES.get(
+                    meta.get("instrumentType"), "other"
+                ),
+                "currency": meta.get("currency") or "USD",
+                "price": float(price) if price is not None else None,
+            }
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+        return None
 
 
 async def fetch_benchmark_history(symbol: str, range_: str = "5d") -> dict[str, float | None]:

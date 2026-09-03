@@ -36,10 +36,29 @@ def add_instrument(
     expiry: str = Form(""),
     strike: str = Form(""),
     option_type: str = Form(""),
+    side: str = Form("LONG"),
+    quantity: str = Form(""),
+    avg_price: str = Form(""),
+    fees: str = Form(""),
 ):
+    side = side.strip().upper()
+    try:
+        quantity_value = float(quantity) if quantity.strip() else None
+        avg_price_value = float(avg_price) if avg_price.strip() else None
+        fees_value = float(fees) if fees.strip() else 0
+    except (ValueError, TypeError):
+        return flash_redirect("/positions", "error", "Invalid opening position")
+    if side not in {"LONG", "SHORT"}:
+        return flash_redirect("/positions", "error", "Invalid side")
+    if quantity_value is not None and quantity_value <= 0:
+        return flash_redirect("/positions", "error", "Quantity must be positive")
+    if quantity_value is not None and avg_price_value is None:
+        return flash_redirect("/positions", "error", "Avg price required with quantity")
+    if avg_price_value is not None and avg_price_value < 0:
+        return flash_redirect("/positions", "error", "Avg price cannot be negative")
     conn = get_conn()
     try:
-        conn.execute(
+        cursor = conn.execute(
             "INSERT INTO instruments(symbol,name,asset_class,currency,multiplier,pricing_source,"
             "yahoo_symbol,manual_mark,notes,underlying,expiry,strike,option_type) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -59,12 +78,28 @@ def add_instrument(
                 option_type.strip().upper() or None,
             ),
         )
+        if quantity_value is not None:
+            conn.execute(
+                "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (
+                    cursor.lastrowid,
+                    datetime.now(UTC).isoformat(),
+                    "BUY" if side == "LONG" else "SELL",
+                    quantity_value,
+                    avg_price_value,
+                    fees_value,
+                    "Opening position",
+                ),
+            )
         conn.commit()
     except (ValueError, TypeError, sqlite3.IntegrityError) as exc:
+        conn.rollback()
         conn.close()
         return flash_redirect("/positions", "error", str(exc))
     conn.close()
-    return flash_redirect("/positions", "ok", "Instrument added")
+    message = "Instrument added with opening position" if quantity_value is not None else "Instrument added"
+    return flash_redirect("/positions", "ok", message)
 
 
 @router.post("/instruments/{instrument_id}/edit")

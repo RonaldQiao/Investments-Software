@@ -3,6 +3,8 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from app.pricing import YAHOO_INSTRUMENT_TYPES
+
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
@@ -88,6 +90,105 @@ def test_trade_at_mark_is_nav_neutral_and_snapshot_is_written(client):
     assert response.status_code == 303
     history = client.get("/api/history").json()["snapshots"]
     assert len(history) == 1
+
+
+def test_add_instrument_with_long_opening_position(client):
+    response = client.post(
+        "/instruments",
+        data={
+            "symbol": "LONG",
+            "name": "Long instrument",
+            "asset_class": "equity",
+            "pricing_source": "manual",
+            "manual_mark": "189.5",
+            "side": "LONG",
+            "quantity": "100",
+            "avg_price": "189.5",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    instrument = next(row for row in client.get("/api/instruments").json() if row["symbol"] == "LONG")
+    trade = client.get("/api/trades").json()[0]
+    assert trade["instrument_id"] == instrument["id"]
+    assert trade["side"] == "BUY"
+    assert trade["quantity"] == 100
+    assert trade["price"] == 189.5
+    assert trade["notes"] == "Opening position"
+    position = client.get("/api/portfolio").json()["positions"][0]
+    assert position["side"] == "LONG"
+    assert position["qty"] == 100
+
+
+def test_add_instrument_with_short_opening_position(client):
+    response = client.post(
+        "/instruments",
+        data={
+            "symbol": "SHORT",
+            "name": "Short instrument",
+            "asset_class": "equity",
+            "pricing_source": "manual",
+            "manual_mark": "120",
+            "side": "SHORT",
+            "quantity": "50",
+            "avg_price": "120",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    trade = client.get("/api/trades").json()[0]
+    assert trade["side"] == "SELL"
+    assert trade["quantity"] == 50
+    position = client.get("/api/portfolio").json()["positions"][0]
+    assert position["side"] == "SHORT"
+    assert position["qty"] == -50
+
+
+def test_add_instrument_requires_average_price_for_opening_position(client):
+    response = client.post(
+        "/instruments",
+        data={
+            "symbol": "MISSING-AVG",
+            "name": "Missing average",
+            "asset_class": "equity",
+            "quantity": "100",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "Avg%20price%20required%20with%20quantity" in response.headers["location"]
+    assert not any(row["symbol"] == "MISSING-AVG" for row in client.get("/api/instruments").json())
+
+
+def test_yahoo_lookup_route(client, monkeypatch):
+    async def fake_meta(symbol):
+        assert symbol == "NBIS"
+        return {
+            "symbol": "NBIS",
+            "name": "Nebius Group N.V.",
+            "asset_class": "equity",
+            "currency": "USD",
+            "price": 209.2,
+        }
+
+    monkeypatch.setattr("app.routes.api.fetch_yahoo_meta", fake_meta)
+    response = client.get("/api/lookup?symbol=%20nbis%20")
+    assert response.status_code == 200
+    assert response.json()["name"] == "Nebius Group N.V."
+    assert response.json()["price"] == 209.2
+
+    async def missing_meta(symbol):
+        return None
+
+    monkeypatch.setattr("app.routes.api.fetch_yahoo_meta", missing_meta)
+    assert client.get("/api/lookup?symbol=UNKNOWN").status_code == 404
+    assert client.get("/api/lookup?symbol=%20").status_code == 400
+
+
+def test_yahoo_instrument_type_mapping():
+    assert YAHOO_INSTRUMENT_TYPES["MUTUALFUND"] == "etf"
+    assert YAHOO_INSTRUMENT_TYPES["FUTURE"] == "future"
+    assert YAHOO_INSTRUMENT_TYPES.get("UNRECOGNIZED", "other") == "other"
 
 
 def test_dashboard_speed_guard(client):

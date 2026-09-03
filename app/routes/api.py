@@ -5,10 +5,22 @@ from fastapi.responses import JSONResponse
 
 from ..db import get_conn
 from ..nav import compute_portfolio, history_series
-from ..pricing import refresh_prices
+from ..pricing import fetch_yahoo_meta, refresh_prices
 from ..web import row_dicts
 
 router = APIRouter()
+
+
+@router.get("/api/lookup")
+async def instrument_lookup(symbol: str = ""):
+    symbol = symbol.strip().upper()
+    if not symbol:
+        return JSONResponse({"error": "symbol required"}, status_code=400)
+    result = await fetch_yahoo_meta(symbol)
+    if result is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return result
+
 
 @router.get("/api/portfolio")
 def portfolio_api():
@@ -46,6 +58,23 @@ def instruments_api():
 @router.post("/api/instruments")
 async def instruments_create_api(request: Request):
     payload = await request.json()
+    side = str(payload.get("side", "LONG")).strip().upper()
+    try:
+        quantity = float(payload["quantity"]) if payload.get("quantity") not in (None, "") else None
+        avg_price = (
+            float(payload["avg_price"]) if payload.get("avg_price") not in (None, "") else None
+        )
+        fees = float(payload.get("fees", 0) or 0)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "invalid opening position"}, status_code=400)
+    if side not in {"LONG", "SHORT"}:
+        return JSONResponse({"error": "invalid side"}, status_code=400)
+    if quantity is not None and quantity <= 0:
+        return JSONResponse({"error": "quantity must be positive"}, status_code=400)
+    if quantity is not None and avg_price is None:
+        return JSONResponse({"error": "avg_price required with quantity"}, status_code=400)
+    if avg_price is not None and avg_price < 0:
+        return JSONResponse({"error": "avg_price cannot be negative"}, status_code=400)
     conn = get_conn()
     fields = (
         payload.get("symbol", "").strip().upper(),
@@ -68,6 +97,20 @@ async def instruments_create_api(request: Request):
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         fields,
     )
+    if quantity is not None:
+        conn.execute(
+            "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                cursor.lastrowid,
+                datetime.now(UTC).isoformat(),
+                "BUY" if side == "LONG" else "SELL",
+                quantity,
+                avg_price,
+                fees,
+                "Opening position",
+            ),
+        )
     conn.commit()
     row = conn.execute("SELECT * FROM instruments WHERE id=?", (cursor.lastrowid,)).fetchone()
     conn.close()

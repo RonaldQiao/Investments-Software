@@ -2,11 +2,15 @@
 {% block content %}
 <h2>Add instrument</h2>
 <form class="form-grid" method="post" action="/instruments">
-<label>Symbol<input name="symbol" placeholder="AAPL" required></label>
+<label>Symbol<input name="symbol" placeholder="AAPL" required><small id="lookup-status" class="price-meta"></small></label>
 <label>Name<input name="name" placeholder="Apple" required></label>
 <label>Class<select name="asset_class">{% for c in ["equity","etf","bond","credit","option","future","commodity","crypto","fx","other"] %}<option>{{ c }}</option>{% endfor %}</select></label>
 <label>Currency<input name="currency" value="USD"></label>
 <label>Multiplier<input name="multiplier" type="number" step="any" value="1"></label>
+<label>Side<select name="side"><option>LONG</option><option>SHORT</option></select></label>
+<label>Qty<input name="quantity" type="number" step="any" placeholder="0"></label>
+<label>Avg price<input name="avg_price" type="number" step="any"></label>
+<label>Fees<input name="fees" type="number" step="any"></label>
 <label>Pricing<select name="pricing_source"><option value="yahoo">Yahoo</option><option value="manual">Manual</option></select></label>
 <label>Yahoo symbol<input name="yahoo_symbol" placeholder="ES=F"></label>
 <label>Manual mark<input name="manual_mark" type="number" step="any"></label>
