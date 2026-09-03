@@ -21,3 +21,9 @@ backup:
 
 backfill-benchmark:
 	$(PYTHON) scripts/backfill_benchmark.py
+
+install-agent:
+	bash scripts/install_launchd.sh
+
+uninstall-agent:
+	bash scripts/uninstall_launchd.sh

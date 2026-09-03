@@ -42,44 +42,64 @@ async def refresh_with_retries(conn, sleep=asyncio.sleep):
     return failures
 
 
+async def run_snapshot_job(
+    conn,
+    job: str,
+    snapshot_date: date | None = None,
+    catch_up: bool = False,
+    sleep=asyncio.sleep,
+    require_close: bool = False,
+):
+    if str(get_setting(conn, "snapshot_enabled", "1")) != "1":
+        return None
+    now = datetime.now(NY)
+    day = snapshot_date or now.date()
+    if catch_up:
+        if require_close and now.time() < time(16):
+            return None
+        if not require_close and now.time() < time(16):
+            day = day.fromordinal(day.toordinal() - 1)
+        while not is_trading_day(day):
+            day = day.fromordinal(day.toordinal() - 1)
+        if not _missing_snapshot(conn, day):
+            return None
+    elif snapshot_date is None and not is_trading_day(day):
+        return None
+    try:
+        failures = await refresh_with_retries(conn, sleep=sleep)
+        benchmark_close = None
+        benchmark_symbol = str(get_setting(conn, "benchmark_symbol", "") or "").strip().upper()
+        if benchmark_symbol:
+            from .pricing import fetch_benchmark_close
+
+            benchmark_close = await fetch_benchmark_close(benchmark_symbol, day)
+        source = "cli" if job == "cli" else "scheduled"
+        snapshot = take_snapshot(
+            conn, day, source, refresh=False, benchmark_close=benchmark_close
+        )
+        _write_job_log(conn, job, "partial" if failures else "ok", ", ".join(failures))
+        LOGGER.info("%s NAV snapshot written for %s", job.capitalize(), day)
+        return {"snapshot": snapshot, "failures": failures}
+    except Exception as exc:
+        _write_job_log(conn, job, "failed", str(exc))
+        LOGGER.exception("%s NAV snapshot failed", job.capitalize())
+        raise
+
+
 def run_job():
     conn = get_conn()
-    if str(get_setting(conn, "snapshot_enabled", "1")) != "1":
+    try:
+        asyncio.run(run_snapshot_job(conn, "scheduled"))
+    finally:
         conn.close()
-        return
-    today = datetime.now(NY).date()
-    if is_trading_day(today):
-        try:
-            failures = asyncio.run(refresh_with_retries(conn))
-            take_snapshot(conn, today, "scheduled", refresh=False)
-            status = "partial" if failures else "ok"
-            detail = ", ".join(failures)
-            _write_job_log(conn, "scheduled", status, detail)
-            LOGGER.info("Scheduled NAV snapshot written for %s", today)
-        except Exception as exc:
-            _write_job_log(conn, "scheduled", "failed", str(exc))
-            LOGGER.exception("Scheduled NAV snapshot failed")
-    conn.close()
 
 
 async def catch_up_async():
     conn = get_conn()
-    now = datetime.now(NY)
-    day = now.date()
-    if not is_trading_day(day) or now.time() < time(16):
-        day = day.fromordinal(day.toordinal() - 1)
-        while not is_trading_day(day):
-            day = day.fromordinal(day.toordinal() - 1)
-    if _missing_snapshot(conn, day) and str(get_setting(conn, "snapshot_enabled", "1")) == "1":
-        try:
-            failures = await refresh_with_retries(conn)
-            take_snapshot(conn, day, "scheduled", refresh=False)
-            _write_job_log(conn, "catch-up", "partial" if failures else "ok", ", ".join(failures))
-            LOGGER.info("Catch-up NAV snapshot written for %s", day)
-        except Exception as exc:
-            _write_job_log(conn, "catch-up", "failed", str(exc))
-            LOGGER.exception("Catch-up NAV snapshot failed")
-    conn.close()
+    try:
+        await run_snapshot_job(conn, "catch-up", catch_up=True)
+    finally:
+        conn.close()
 
 
 def _missing_snapshot(conn, day):

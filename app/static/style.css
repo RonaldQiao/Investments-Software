@@ -15,7 +15,7 @@ h2+.headline{border-top:0}
 .legend-fund{color:#000}
 .legend-benchmark{color:#999}
 .day-date{color:#999;font:12px/1.25 "SFMono-Regular",Menlo,Monaco,Consolas,monospace;white-space:nowrap}
-.day-result{white-space:nowrap}
+.summary{grid-template-columns:repeat(5,minmax(0,1fr))}
 th.num{text-align:right}
 .page-actions{gap:8px}
 .page-head .inline+.button{margin-left:0}
