@@ -5,7 +5,7 @@ from fastapi.responses import JSONResponse
 
 from ..db import get_conn
 from ..nav import compute_portfolio, history_series
-from ..pricing import fetch_yahoo_meta, refresh_prices
+from ..pricing import fetch_yahoo_meta, price_instrument, refresh_prices
 from ..web import row_dicts
 
 router = APIRouter()
@@ -112,9 +112,12 @@ async def instruments_create_api(request: Request):
             ),
         )
     conn.commit()
+    price = await price_instrument(conn, cursor.lastrowid)
     row = conn.execute("SELECT * FROM instruments WHERE id=?", (cursor.lastrowid,)).fetchone()
     conn.close()
-    return dict(row)
+    result = dict(row)
+    result["price"] = price
+    return result
 
 
 @router.delete("/api/instruments/{instrument_id}")

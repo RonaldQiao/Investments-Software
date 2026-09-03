@@ -41,8 +41,9 @@ an underlying, expiry, strike, and call/put type. Yahoo options without an
 explicit symbol use OCC symbols such as `AAPL261218C00200000`.
 
 The Positions Add instrument form supports optional LONG/SHORT opening fields
-(quantity, average price, and fees), and `/api/lookup?symbol=NBIS` provides
-Yahoo symbol metadata and a current price for autofill.
+(quantity, average price, and fees); Yahoo instruments are priced immediately on
+creation, and `/api/lookup?symbol=NBIS` provides Yahoo symbol metadata and a
+current price for autofill.
 
 Use `make backup` (or `POST /backup` in Settings) to create a SQLite backup in
 `data/backups/`. Only the newest 20 backups are retained. GitHub Actions runs

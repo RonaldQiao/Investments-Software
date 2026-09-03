@@ -144,6 +144,32 @@ async def fetch_benchmark_close(symbol: str, target_date: date) -> float | None:
     return (await fetch_benchmark_history(symbol, "5d")).get(target_date.isoformat())
 
 
+def _upsert_price(conn, instrument_id: int, price: float, now: str) -> None:
+    conn.execute(
+        "INSERT INTO prices(instrument_id,price,ts,source) VALUES (?,?,?,'yahoo') "
+        "ON CONFLICT(instrument_id) DO UPDATE SET price=excluded.price,"
+        "ts=excluded.ts,source=excluded.source",
+        (instrument_id, price, now),
+    )
+
+
+async def price_instrument(conn, instrument_id: int) -> float | None:
+    row = conn.execute(
+        "SELECT id,symbol,yahoo_symbol,asset_class,underlying,expiry,strike,option_type,"
+        "pricing_source FROM instruments WHERE id=?",
+        (instrument_id,),
+    ).fetchone()
+    if row is None or row["pricing_source"] != "yahoo":
+        return None
+    symbol = yahoo_symbol_for(row)
+    price = (await fetch_yahoo([symbol])).get(symbol)
+    if price is None:
+        return None
+    _upsert_price(conn, instrument_id, price, datetime.now(UTC).isoformat())
+    conn.commit()
+    return price
+
+
 async def refresh_prices(conn) -> list[str]:
     rows = conn.execute(
         "SELECT id,symbol,yahoo_symbol,asset_class,underlying,expiry,strike,option_type "
@@ -159,12 +185,7 @@ async def refresh_prices(conn) -> list[str]:
         if price is None:
             failed.append(symbol)
             continue
-        conn.execute(
-            "INSERT INTO prices(instrument_id,price,ts,source) VALUES (?,?,?,'yahoo') "
-            "ON CONFLICT(instrument_id) DO UPDATE SET price=excluded.price,"
-            "ts=excluded.ts,source=excluded.source",
-            (row["id"], price, now),
-        )
+        _upsert_price(conn, row["id"], price, now)
     set_setting(conn, "last_refresh_failures", json.dumps(failed))
     set_setting(conn, "last_refresh_at", now)
     conn.commit()

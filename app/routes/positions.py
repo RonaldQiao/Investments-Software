@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from ..db import get_conn
 from ..nav import compute_portfolio
 from ..positions import build_positions
+from ..pricing import price_instrument
 from ..web import flash_redirect, render, row_dicts
 
 router = APIRouter()
@@ -22,7 +23,7 @@ def positions_page(request: Request):
 
 
 @router.post("/instruments")
-def add_instrument(
+async def add_instrument(
     symbol: str = Form(...),
     name: str = Form(...),
     asset_class: str = Form(...),
@@ -97,13 +98,16 @@ def add_instrument(
         conn.rollback()
         conn.close()
         return flash_redirect("/positions", "error", str(exc))
-    conn.close()
     message = "Instrument added with opening position" if quantity_value is not None else "Instrument added"
+    if pricing_source == "yahoo":
+        price = await price_instrument(conn, cursor.lastrowid)
+        message += f" · priced {price:.2f}" if price is not None else "; no Yahoo price yet"
+    conn.close()
     return flash_redirect("/positions", "ok", message)
 
 
 @router.post("/instruments/{instrument_id}/edit")
-def edit_instrument(
+async def edit_instrument(
     instrument_id: int,
     name: str = Form(...),
     asset_class: str = Form(...),
@@ -128,6 +132,18 @@ def edit_instrument(
         "FROM trades WHERE instrument_id=?",
         (instrument_id,),
     ).fetchone()[0]
+    new_strike = float(strike) if strike.strip() else None
+    changed_for_pricing = (
+        pricing_source == "yahoo"
+        and (
+            instrument["pricing_source"] != pricing_source
+            or instrument["yahoo_symbol"] != (yahoo_symbol.strip() or None)
+            or instrument["underlying"] != (underlying.strip() or None)
+            or instrument["expiry"] != (expiry.strip() or None)
+            or instrument["strike"] != new_strike
+            or instrument["option_type"] != (option_type.strip().upper() or None)
+        )
+    )
     conn.execute(
         "UPDATE instruments SET name=?,asset_class=?,multiplier=?,pricing_source=?,"
         "yahoo_symbol=?,notes=?,underlying=?,expiry=?,strike=?,option_type=? WHERE id=?",
@@ -140,16 +156,19 @@ def edit_instrument(
             notes.strip(),
             underlying.strip() or None,
             expiry.strip() or None,
-            float(strike) if strike.strip() else None,
+            new_strike,
             option_type.strip().upper() or None,
             instrument_id,
         ),
     )
     conn.commit()
-    conn.close()
     message = "Instrument updated"
     if float(multiplier) != float(instrument["multiplier"]) and abs(float(position)) > 1e-12:
         message += "; multiplier changed; NAV recomputed"
+    if changed_for_pricing:
+        price = await price_instrument(conn, instrument_id)
+        message += f" · priced {price:.2f}" if price is not None else "; no Yahoo price yet"
+    conn.close()
     return flash_redirect("/positions", "ok", message)
 
 

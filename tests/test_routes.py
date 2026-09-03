@@ -191,6 +191,98 @@ def test_yahoo_instrument_type_mapping():
     assert YAHOO_INSTRUMENT_TYPES.get("UNRECOGNIZED", "other") == "other"
 
 
+def test_yahoo_instrument_is_priced_on_creation(client, monkeypatch):
+    async def fake_fetch(symbols):
+        assert symbols == ["NBIS"]
+        return {"NBIS": 209.2}
+
+    monkeypatch.setattr("app.pricing.fetch_yahoo", fake_fetch)
+    response = client.post(
+        "/instruments",
+        data={
+            "symbol": "NBIS",
+            "name": "Nebius",
+            "asset_class": "equity",
+            "quantity": "1000",
+            "avg_price": "200.12",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "priced" in response.headers["location"]
+
+    from app import db
+
+    conn = db.get_conn()
+    instrument = conn.execute(
+        "SELECT id FROM instruments WHERE symbol='NBIS'"
+    ).fetchone()
+    price = conn.execute(
+        "SELECT price FROM prices WHERE instrument_id=?", (instrument["id"],)
+    ).fetchone()
+    conn.close()
+    assert price["price"] == 209.2
+    positions = client.get("/api/portfolio").json()["positions"]
+    assert positions[0]["mark"] == 209.2
+    html = client.get("/positions").text
+    assert "209.20" in html
+    assert "no price" not in html
+
+
+def test_yahoo_instrument_creation_without_price_keeps_instrument(client, monkeypatch):
+    async def fake_fetch(symbols):
+        assert symbols == ["NBIS"]
+        return {"NBIS": None}
+
+    monkeypatch.setattr("app.pricing.fetch_yahoo", fake_fetch)
+    response = client.post(
+        "/instruments",
+        data={
+            "symbol": "NBIS",
+            "name": "Nebius",
+            "asset_class": "equity",
+            "quantity": "1000",
+            "avg_price": "200.12",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "no%20Yahoo%20price%20yet" in response.headers["location"]
+    assert any(row["symbol"] == "NBIS" for row in client.get("/api/instruments").json())
+
+    from app import db
+
+    conn = db.get_conn()
+    assert conn.execute("SELECT COUNT(*) FROM prices").fetchone()[0] == 0
+    conn.close()
+
+
+def test_manual_instrument_creation_does_not_fetch_yahoo(client, monkeypatch):
+    calls = 0
+
+    async def fake_fetch(symbols):
+        nonlocal calls
+        calls += 1
+        return {"MANUAL": 10}
+
+    monkeypatch.setattr("app.pricing.fetch_yahoo", fake_fetch)
+    response = client.post(
+        "/instruments",
+        data={
+            "symbol": "MANUAL",
+            "name": "Manual instrument",
+            "asset_class": "other",
+            "pricing_source": "manual",
+            "manual_mark": "10",
+            "quantity": "1",
+            "avg_price": "10",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert calls == 0
+
+
 def test_dashboard_speed_guard(client):
     client.get("/")
     durations = []
