@@ -8,7 +8,7 @@ import math
 from datetime import date, datetime, timezone
 
 from .db import get_setting, set_setting
-from .pricing import refresh_prices
+from .pricing import refresh_prices, yahoo_symbol_for
 from .positions import build_positions, cash_from_trades
 
 
@@ -51,9 +51,8 @@ def compute_portfolio(conn, mark_overrides=None):
         if not pos or pos.qty == 0:
             continue
         price_row = price_rows.get(instrument["id"])
-        failed = instrument["symbol"] in failed_symbols or (
-            instrument["yahoo_symbol"] and instrument["yahoo_symbol"] in failed_symbols
-        )
+        quote_symbol = yahoo_symbol_for(instrument)
+        failed = quote_symbol in failed_symbols
         if instrument["id"] in mark_overrides:
             mark = float(mark_overrides[instrument["id"]])
         elif instrument["pricing_source"] == "manual":

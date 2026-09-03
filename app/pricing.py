@@ -2,11 +2,45 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import httpx
 
 from .db import get_conn, set_setting
+
+
+def occ_symbol(underlying, expiry, option_type, strike):
+    if isinstance(expiry, datetime):
+        expiry = expiry.date()
+    elif not isinstance(expiry, date):
+        expiry = date.fromisoformat(str(expiry))
+    option_type = str(option_type).upper()
+    if option_type not in {"C", "P"}:
+        raise ValueError("option_type must be C or P")
+    return (
+        f"{str(underlying).upper()}{expiry:%y%m%d}{option_type}"
+        f"{round(float(strike) * 1000):08d}"
+    )
+
+
+def yahoo_symbol_for(instrument):
+    explicit = instrument["yahoo_symbol"]
+    if explicit:
+        return explicit
+    if (
+        instrument["asset_class"] == "option"
+        and instrument["underlying"]
+        and instrument["expiry"]
+        and instrument["option_type"]
+        and instrument["strike"] is not None
+    ):
+        return occ_symbol(
+            instrument["underlying"],
+            instrument["expiry"],
+            instrument["option_type"],
+            instrument["strike"],
+        )
+    return instrument["symbol"]
 
 
 async def fetch_yahoo(symbols: list[str]) -> dict[str, float | None]:
@@ -36,14 +70,15 @@ async def fetch_yahoo(symbols: list[str]) -> dict[str, float | None]:
 
 async def refresh_prices(conn) -> list[str]:
     rows = conn.execute(
-        "SELECT id,symbol,yahoo_symbol FROM instruments WHERE pricing_source='yahoo'"
+        "SELECT id,symbol,yahoo_symbol,asset_class,underlying,expiry,strike,option_type "
+        "FROM instruments WHERE pricing_source='yahoo'"
     ).fetchall()
-    symbols = [row["yahoo_symbol"] or row["symbol"] for row in rows]
+    symbols = [yahoo_symbol_for(row) for row in rows]
     quotes = await fetch_yahoo(symbols) if symbols else {}
     now = datetime.now(timezone.utc).isoformat()
     failed = []
     for row in rows:
-        symbol = row["yahoo_symbol"] or row["symbol"]
+        symbol = yahoo_symbol_for(row)
         price = quotes.get(symbol)
         if price is None:
             failed.append(symbol)
