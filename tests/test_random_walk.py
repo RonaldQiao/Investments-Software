@@ -77,7 +77,7 @@ def test_random_walk_cumulative_returns_and_nav_unit_identity():
                 ).fetchone()[0]
                 if balance * shadow_npu > amount:
                     record_cash_flow(
-                        conn, f"{day.isoformat()}T12:00:00", -amount, lp_id, "random"
+                        conn, f"{day.isoformat()}T12:00:00", -amount, flow_lp_id, "random"
                     )
         if rng.random() < 0.1:
             zero = [
@@ -104,7 +104,7 @@ def test_random_walk_cumulative_returns_and_nav_unit_identity():
                 amount = float(flow["amount"])
                 shadow_gross_nav += amount
                 shadow_units += amount / shadow_npu_before_flow
-            fee = shadow_gross_nav * 200 / 10000 / 252
+            fee = (shadow_gross_nav - shadow_liability) * 200 / 10000 / 252
             shadow_liability += fee
             shadow_npu = (shadow_gross_nav - shadow_liability) / shadow_units
         snapshots.append(take_snapshot(conn, day, refresh=False))

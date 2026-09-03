@@ -13,5 +13,8 @@ seed:
 test:
 	$(PYTHON) -m pytest
 
+lint:
+	.venv/bin/ruff check .
+
 backup:
 	$(PYTHON) scripts/backup.py

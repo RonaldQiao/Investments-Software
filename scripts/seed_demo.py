@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import argparse
+import asyncio
 import random
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -13,15 +13,15 @@ import holidays
 from app.db import get_conn, init_db
 from app.fees import record_cash_flow
 from app.nav import take_snapshot
-from app.pricing import refresh_prices
 from app.positions import build_positions
+from app.pricing import refresh_prices
 
 NYSE_HOLIDAYS = holidays.financial_holidays("NYSE")
 
 
 def trading_days(count):
     days = []
-    day = datetime.now(timezone.utc).date() - timedelta(days=1)
+    day = datetime.now(UTC).date() - timedelta(days=1)
     while len(days) < count:
         if day.weekday() < 5 and day not in NYSE_HOLIDAYS:
             days.append(day)
@@ -56,6 +56,9 @@ def backfill_history(conn, count, history_days=None):
     middle = count // 2
     investor = conn.execute(
         "SELECT id FROM lps WHERE name='Investor A'"
+    ).fetchone()["id"]
+    investor_b = conn.execute(
+        "SELECT id FROM lps WHERE name='Investor B'"
     ).fetchone()["id"]
     for index, day in enumerate(days):
         for instrument_id, mark in list(marks.items()):
@@ -92,11 +95,18 @@ def backfill_history(conn, count, history_days=None):
                 investor,
                 "Demo history contribution",
             )
+            record_cash_flow(
+                conn,
+                f"{day.isoformat()}T12:00:00",
+                250_000,
+                investor_b,
+                "Investor B mid-history contribution",
+            )
         take_snapshot(conn, day, "scheduled", refresh=False)
     for instrument_id, mark in original_manual.items():
         conn.execute(
             "UPDATE instruments SET manual_mark=?,manual_mark_at=? WHERE id=?",
-            (mark, datetime.now(timezone.utc).isoformat(), instrument_id),
+            (mark, datetime.now(UTC).isoformat(), instrument_id),
         )
     conn.commit()
 
@@ -109,6 +119,7 @@ def main():
     init_db()
     conn = get_conn()
     conn.execute("DELETE FROM fee_events")
+    conn.execute("DELETE FROM lp_fee_accruals")
     conn.execute("DELETE FROM nav_snapshots")
     conn.execute("DELETE FROM lp_units")
     conn.execute("DELETE FROM trades")
@@ -116,12 +127,25 @@ def main():
     conn.execute("DELETE FROM prices")
     conn.execute("DELETE FROM instruments")
     conn.execute("DELETE FROM settings WHERE key='fee_liability'")
+    conn.execute("UPDATE lps SET hwm=NULL")
     conn.execute("UPDATE settings SET value='1000' WHERE key='hwm_per_unit'")
     conn.execute("INSERT OR IGNORE INTO lps(name,is_gp) VALUES ('Investor A',0)")
+    conn.execute(
+        "INSERT OR IGNORE INTO lps(name,is_gp,mgmt_fee_bps,perf_fee_pct) VALUES "
+        "('Investor B',0,150,15)"
+    )
+    conn.execute(
+        "UPDATE lps SET mgmt_fee_bps=NULL,perf_fee_pct=NULL,hwm=NULL "
+        "WHERE name='Investor A'"
+    )
+    conn.execute(
+        "UPDATE lps SET mgmt_fee_bps=150,perf_fee_pct=15,hwm=NULL "
+        "WHERE name='Investor B'"
+    )
     conn.execute("INSERT OR IGNORE INTO lps(name,is_gp) VALUES ('GP',1)")
     conn.execute("UPDATE lps SET is_gp=0 WHERE name='Principal'")
     conn.execute("UPDATE lps SET is_gp=1 WHERE name='GP'")
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     specs = [
         ("AAPL", "Apple", "equity", 1, "yahoo", None, None),
         ("NVDA", "NVIDIA", "equity", 1, "yahoo", None, None),

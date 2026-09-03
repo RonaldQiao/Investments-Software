@@ -17,10 +17,12 @@
   <label>Type<select name="flow_type"><option>Contribution</option><option>Withdrawal</option></select></label>
   <label>Amount<input name="amount" type="number" min="0" step="0.01" required></label>
   <label>Note<input name="note"></label>
+  <label>New LP mgmt bps<input name="new_mgmt_fee_bps" type="number" min="0" step="1" placeholder="Default"></label>
+  <label>New LP perf %<input name="new_perf_fee_pct" type="number" min="0" step=".1" placeholder="Default"></label>
   <div><label>&nbsp;</label><button>Record flow</button></div>
 </form>
 <h2>LP statements</h2>
-<table><thead><tr><th>LP</th><th class="num">Units</th><th class="num">Value</th><th></th></tr></thead><tbody>{% for lp in lp_ownership %}<tr><td class="person">{{ lp.name }}</td><td class="num">{{ lp.units|number(4) }}</td><td class="num">{{ lp.value|number }}</td><td><a href="/lps/{{ lp.id }}/statement">statement</a></td></tr>{% else %}<tr><td colspan="4" class="empty">No LPs.</td></tr>{% endfor %}</tbody></table>
+<table><thead><tr><th>LP</th><th class="num">Units</th><th class="num">Mgmt bps</th><th class="num">Perf %</th><th class="num">HWM</th><th class="num">Value</th><th></th></tr></thead><tbody>{% for lp in lp_ownership %}<tr><td class="person">{{ lp.name }}</td><td class="num">{{ lp.units|number(4) }}</td><td class="num">{{ "—" if lp.is_gp else (lp.mgmt_fee_bps if lp.mgmt_fee_bps is not none else "Default") }}</td><td class="num">{{ "—" if lp.is_gp else (lp.perf_fee_pct if lp.perf_fee_pct is not none else "Default") }}</td><td class="num">{{ lp.hwm|number if lp.hwm is not none else "—" }}</td><td class="num">{{ lp.value|number }}</td><td><a href="/lps/{{ lp.id }}/statement">statement</a></td></tr>{% else %}<tr><td colspan="7" class="empty">No LPs.</td></tr>{% endfor %}</tbody></table>
 <table><thead><tr><th>Date</th><th>LP</th><th class="num">Amount</th><th class="num">Units issued/redeemed</th><th class="num">NAV/unit</th><th>Note</th><th></th></tr></thead><tbody>
 {% for flow in flows %}<tr><td>{{ flow.date }}</td><td class="person">{{ flow.lp_name or "—" }}</td><td class="num {{ 'negative' if flow.amount < 0 }}">{{ flow.amount|number }}</td><td class="num {{ 'negative' if flow.units is not none and flow.units < 0 }}">{{ (flow.units or 0)|number(4) }}</td><td class="num">{{ (flow.nav_per_unit or 0)|number }}</td><td>{{ flow.note or "" }}</td><td><a href="/lps/{{ flow.lp_id }}/statement">statement</a> · <form class="inline" method="post" action="/capital/{{ flow.id }}/delete"><button>Delete</button></form></td></tr>{% else %}<tr><td colspan="7" class="empty">No capital flows.</td></tr>{% endfor %}
 </tbody></table>

@@ -67,7 +67,10 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         CREATE TABLE IF NOT EXISTS lps (
           id INTEGER PRIMARY KEY,
           name TEXT NOT NULL UNIQUE,
-          is_gp INTEGER NOT NULL DEFAULT 0
+          is_gp INTEGER NOT NULL DEFAULT 0,
+          mgmt_fee_bps REAL,
+          perf_fee_pct REAL,
+          hwm REAL
         );
         CREATE TABLE IF NOT EXISTS lp_units (
           id INTEGER PRIMARY KEY,
@@ -107,7 +110,15 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
           amount REAL NOT NULL,
           hwm_before REAL,
           hwm_after REAL,
-          note TEXT
+          note TEXT,
+          lp_id INTEGER REFERENCES lps(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS lp_fee_accruals (
+          lp_id INTEGER NOT NULL REFERENCES lps(id) ON DELETE CASCADE,
+          date TEXT NOT NULL,
+          mgmt REAL NOT NULL DEFAULT 0,
+          perf REAL NOT NULL DEFAULT 0,
+          PRIMARY KEY (lp_id, date)
         );
         CREATE TABLE IF NOT EXISTS job_log (
           id INTEGER PRIMARY KEY,
@@ -133,6 +144,21 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
     ):
         if name not in existing_columns:
             conn.execute(f"ALTER TABLE instruments ADD COLUMN {name} {definition}")
+    lp_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(lps)").fetchall()
+    }
+    for name, definition in (
+        ("mgmt_fee_bps", "REAL"),
+        ("perf_fee_pct", "REAL"),
+        ("hwm", "REAL"),
+    ):
+        if name not in lp_columns:
+            conn.execute(f"ALTER TABLE lps ADD COLUMN {name} {definition}")
+    fee_event_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(fee_events)").fetchall()
+    }
+    if "lp_id" not in fee_event_columns:
+        conn.execute("ALTER TABLE fee_events ADD COLUMN lp_id INTEGER REFERENCES lps(id)")
     defaults = {
         "leverage": "1.0",
         "borrow_rate": "0.05",

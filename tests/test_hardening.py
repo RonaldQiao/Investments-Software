@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from urllib.parse import unquote
 
 import pytest
@@ -27,7 +27,7 @@ def test_failed_and_stale_prices_are_reported():
         "INSERT INTO trades(instrument_id,ts,side,quantity,price) VALUES (?,?,'BUY',2,10)",
         (instrument_id, "2026-01-01"),
     )
-    old = datetime.now(timezone.utc).replace(year=2025).isoformat()
+    old = datetime.now(UTC).replace(year=2025).isoformat()
     conn.execute(
         "INSERT INTO prices(instrument_id,price,ts,source) VALUES (?,?,?,'yahoo')",
         (instrument_id, 12, old),
@@ -67,7 +67,7 @@ def test_snapshot_falls_back_and_audits_marks():
     conn.execute(
         "INSERT OR REPLACE INTO prices(instrument_id,price,ts,source) "
         "VALUES (?,20,?,'yahoo')",
-        (instrument_id, datetime.now(timezone.utc).isoformat()),
+        (instrument_id, datetime.now(UTC).isoformat()),
     )
     set_setting(conn, "last_refresh_failures", "[]")
     conn.commit()

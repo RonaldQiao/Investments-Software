@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime
+from itertools import pairwise
 from zoneinfo import ZoneInfo
 
 NY = ZoneInfo("America/New_York")
@@ -17,7 +18,7 @@ def _trade_date(value):
     text = str(value)
     if "T" not in text:
         return date.fromisoformat(text[:10])
-    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(text)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=NY)
     return parsed.astimezone(NY).date()
@@ -76,7 +77,7 @@ def attribution(conn, start_date, end_date):
     trade_pointer = 0
     rows_by_id = {}
     daily_by_id = defaultdict(list)
-    for previous, current in zip(snapshots, snapshots[1:]):
+    for previous, current in pairwise(snapshots):
         previous_day = date.fromisoformat(previous["date"])
         current_day = date.fromisoformat(current["date"])
         while (

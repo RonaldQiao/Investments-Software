@@ -6,7 +6,7 @@
 <form class="update-form" method="post" action="/update/marks">
 <table><thead><tr><th>Instrument</th><th>Side</th><th class="num">Qty</th><th class="num">Avg</th><th class="num">Mark</th><th>Mark date</th></tr></thead><tbody>
 {% for p in positions %}<tr>
-<td class="instrument-name">{{ p.symbol }} <span class="meta-inline">{{ p.name }}</span>{% if p.expiry %}<small class="{{ 'expired' if p.expiry|expiry_days < 0 }}">exp {{ p.expiry }} · {{ p.expiry|expiry_days }}d</small>{% endif %}</td>
+<td class="instrument-name"><span>{{ p.symbol }}</span><small>{{ p.name }}</small>{% if p.expiry %}<small class="{{ 'expired' if p.expiry|expiry_days < 0 }}">exp {{ p.expiry }} · {{ p.expiry|expiry_days }}d</small>{% endif %}</td>
 <td>{{ p.side }}</td><td class="num">{{ p.qty|number(4) }}</td><td class="num">{{ p.avg_price|number }}</td>
 <td class="num">{% if p.pricing_source == "manual" %}<input name="mark_{{ p.instrument_id }}" type="number" step="any" value="{{ p.mark if p.mark is not none else '' }}" required>{% else %}{% if p.price_failed or p.mark is none %}—<small class="price-meta">no price</small>{% else %}{{ p.mark|number }}{% if p.price_age_seconds is not none and p.price_age_seconds > 86400 %}<small class="price-meta">{{ p.price_age_seconds|age }}</small>{% endif %}{% endif %}{% endif %}</td>
 <td>{% if p.pricing_source == "manual" %}<input name="mark_date_{{ p.instrument_id }}" type="date" value="{{ p.manual_mark_at[:10] if p.manual_mark_at else '' }}">{% else %}—{% endif %}</td>
@@ -16,7 +16,7 @@
 {% else %}<p class="empty">No open positions.</p>{% endif %}
 <h2>Trade blotter</h2>
 <form method="post" action="/update/blotter">
-<label>Trades, one per line<textarea name="blotter" rows="4" placeholder="BUY 100 AAPL @ 189.5&#10;SELL 2 ES=F @ 5400 fee 4.5"></textarea></label>
+<label class="blotter-label">Trades, one per line<textarea name="blotter" rows="4" placeholder="BUY 100 AAPL @ 189.5&#10;SELL 2 ES=F @ 5400 fee 4.5"></textarea></label>
 <button>Record trades</button>
 </form>
 <div class="actions"><form class="inline" method="post" action="/prices/refresh"><input type="hidden" name="return_to" value="/update"><button>Refresh prices</button></form><form class="inline" method="post" action="/snapshots/now"><input type="hidden" name="return_to" value="/update"><button>Snapshot now</button></form></div>

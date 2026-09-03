@@ -39,13 +39,14 @@ instruments   id, symbol, name, asset_class, currency, multiplier (1; 100 option
 trades        id, instrument_id, ts, side ('BUY'|'SELL'), quantity, price, fees, notes
 prices        instrument_id PK, price, ts, source          (latest mark only)
 cash_flows    id, ts, amount (+contribution / -withdrawal), lp_id, note
-lps           id, name, is_gp
+lps           id, name, is_gp, mgmt_fee_bps, perf_fee_pct, hwm
 lp_units      id, lp_id, ts, units (+/-), nav_per_unit, cash_flow_id
 nav_snapshots date PK, ts, nav, cash, gross_long, gross_short, net_exposure,
               flows_today, units_outstanding, nav_per_unit, daily_return,
               levered_return, mgmt_fee_accrued, source ('scheduled'|'manual')
 snapshot_marks date, instrument_id, mark, source ('yahoo'|'manual'|'snapshot'|'fallback')
-fee_events    id, ts, kind ('mgmt'|'perf'|'settle'), amount, hwm_before, hwm_after, note
+fee_events    id, ts, kind ('mgmt'|'perf'|'settle'), amount, hwm_before, hwm_after, note, lp_id
+lp_fee_accruals lp_id, date, mgmt, perf (primary key lp_id/date)
 job_log       id, ts, job ('scheduled'|'catch-up'), status ('ok'|'partial'|'failed'),
               detail (failed symbols or error text)
 settings      key PK, value   (leverage, borrow_rate, fund_name, mgmt_fee_bps,
@@ -78,12 +79,14 @@ settings      key PK, value   (leverage, borrow_rate, fund_name, mgmt_fee_bps,
 - **Leverage slider** (1.0×–5.0×, settings). Reported *levered return* =
   L·r − (L−1)·borrow_rate/252. It also sets the target gross exposure (L × NAV)
   shown on the dashboard. It does not change cash or positions.
-- **Management fee** (default 2%/yr) accrues each snapshot day: NAV × bps/10000/252,
-  reducing NAV/unit; recorded as a fee_event owed to the GP.
-- **Performance fee** (default 20%) with a fund-level high-water mark on NAV/unit.
-  Crystallized on demand from the Fees page (or annually): fee = 20% × max(0,
-  NAV/unit − HWM) × units; HWM ← NAV/unit after. Per-LP HWM is a documented
-  simplification; ownership table shows units, % and value per LP.
+- **Management fee** (default 2%/yr) accrues per LP each snapshot day:
+  LP units × NAV/unit × LP bps/10000/252, excluding the GP. The total reduces
+  NAV/unit through `fee_liability`; each LP's amount is recorded in
+  `lp_fee_accruals`.
+- **Performance fee** (default 20%) uses each LP's high-water mark and terms.
+  Crystallization redeems units from each paying LP and issues equivalent units
+  to the GP at the current NAV/unit, so NAV/unit and total units are unchanged.
+  The paying LP's HWM ratchets to the current NAV/unit; non-paying LPs do not.
 - **EOD snapshot** runs 16:00 America/New_York on NYSE trading days: refresh
   Yahoo marks, compute NAV, accrue mgmt fee, write nav_snapshots row (idempotent per
   date). On startup, if the last trading day has no snapshot and it is past 16:00,

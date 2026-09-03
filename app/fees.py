@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from .db import get_setting, set_setting
 from .nav import compute_portfolio
@@ -55,6 +55,12 @@ def record_cash_flow(conn, ts, amount, lp_id, note):
         "INSERT INTO lp_units(lp_id,ts,units,nav_per_unit,cash_flow_id) VALUES (?,?,?,?,?)",
         (lp_id, timestamp, unit_delta, nav_per_unit, flow.lastrowid),
     )
+    if amount > 0:
+        conn.execute(
+            "UPDATE lps SET hwm=? WHERE id=? AND hwm IS NULL",
+            (nav_per_unit, lp_id),
+        )
+        _derive_fund_hwm(conn)
     conn.commit()
     return {
         "cash_flow_id": flow.lastrowid,
@@ -92,6 +98,21 @@ def ownership(conn):
                 "contributed": float(contributed),
                 "withdrawn": float(withdrawn),
                 "pnl": value + float(withdrawn) - float(contributed),
+                "mgmt_fee_bps": lp["mgmt_fee_bps"],
+                "perf_fee_pct": lp["perf_fee_pct"],
+                "hwm": lp["hwm"],
+                "mgmt_fees": float(
+                    conn.execute(
+                        "SELECT COALESCE(SUM(mgmt),0) FROM lp_fee_accruals WHERE lp_id=?",
+                        (lp["id"],),
+                    ).fetchone()[0]
+                ),
+                "perf_fees": float(
+                    conn.execute(
+                        "SELECT COALESCE(SUM(perf),0) FROM lp_fee_accruals WHERE lp_id=?",
+                        (lp["id"],),
+                    ).fetchone()[0]
+                ),
             }
         )
     return {
@@ -106,6 +127,69 @@ def _event_timestamp(ts):
     return ts.isoformat() if isinstance(ts, datetime) else str(ts)
 
 
+def _accrual_date(ts):
+    return ts.date().isoformat() if isinstance(ts, datetime) else str(ts)[:10]
+
+
+def _upsert_accrual(conn, lp_id, accrual_date, mgmt=0.0, perf=0.0):
+    conn.execute(
+        "INSERT INTO lp_fee_accruals(lp_id,date,mgmt,perf) VALUES (?,?,?,?) "
+        "ON CONFLICT(lp_id,date) DO UPDATE SET mgmt=mgmt+excluded.mgmt,"
+        "perf=perf+excluded.perf",
+        (lp_id, accrual_date, mgmt, perf),
+    )
+
+
+def accrue_management_fees(conn, snapshot_date, gross_nav, nav_per_unit=None):
+    total_units = float(
+        conn.execute("SELECT COALESCE(SUM(units),0) FROM lp_units").fetchone()[0]
+    )
+    if not total_units:
+        return 0.0
+    liability = float(get_setting(conn, "fee_liability", 0) or 0)
+    if nav_per_unit is None:
+        nav_per_unit = (float(gross_nav) - liability) / total_units
+    default_bps = float(get_setting(conn, "mgmt_fee_bps", 200) or 0)
+    total = 0.0
+    accrual_date = _accrual_date(snapshot_date)
+    for lp in conn.execute("SELECT * FROM lps WHERE is_gp=0 ORDER BY id").fetchall():
+        units = lp_units_balance(conn, lp["id"])
+        bps = default_bps if lp["mgmt_fee_bps"] is None else float(lp["mgmt_fee_bps"])
+        fee = units * nav_per_unit * bps / 10000 / 252
+        total += fee
+        _upsert_accrual(conn, lp["id"], accrual_date, mgmt=fee)
+        if fee:
+            conn.execute(
+                "INSERT INTO fee_events(ts,kind,amount,hwm_before,hwm_after,note,lp_id) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (
+                    _event_timestamp(snapshot_date),
+                    "mgmt",
+                    fee,
+                    None,
+                    None,
+                    f"Management fee for {accrual_date}",
+                    lp["id"],
+                ),
+            )
+    return total
+
+
+def _derive_fund_hwm(conn):
+    values = [
+        float(row["hwm"])
+        for row in conn.execute(
+            "SELECT hwm FROM lps WHERE is_gp=0 AND hwm IS NOT NULL"
+        ).fetchall()
+    ]
+    if values:
+        conn.execute(
+            "INSERT INTO settings(key,value) VALUES ('hwm_per_unit',?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (str(min(values)),),
+        )
+
+
 def crystallize_perf_fee(conn, ts):
     units = float(
         conn.execute("SELECT COALESCE(SUM(units),0) units FROM lp_units").fetchone()[
@@ -115,26 +199,64 @@ def crystallize_perf_fee(conn, ts):
     gross_nav = float(compute_portfolio(conn)["nav"])
     liability = float(get_setting(conn, "fee_liability", 0) or 0)
     nav_per_unit = (gross_nav - liability) / units if units else 0
-    hwm = float(get_setting(conn, "hwm_per_unit", 1000) or 0)
-    perf_pct = float(get_setting(conn, "perf_fee_pct", 20) or 0)
-    fee = max(0.0, nav_per_unit - hwm) * units * perf_pct / 100
-    if fee > 0:
-        set_setting(conn, "fee_liability", float(get_setting(conn, "fee_liability", 0) or 0) + fee)
+    if not units or not nav_per_unit:
+        return 0.0
+    fees = []
+    for lp in conn.execute("SELECT * FROM lps WHERE is_gp=0 ORDER BY id").fetchall():
+        lp_units = lp_units_balance(conn, lp["id"])
+        if not lp_units:
+            continue
+        hwm = float(lp["hwm"]) if lp["hwm"] is not None else nav_per_unit
+        perf_pct = (
+            float(get_setting(conn, "perf_fee_pct", 20) or 0)
+            if lp["perf_fee_pct"] is None
+            else float(lp["perf_fee_pct"])
+        )
+        fee = max(0.0, nav_per_unit - hwm) * lp_units * perf_pct / 100
+        if fee:
+            fees.append((lp, lp_units, hwm, fee))
+    if not fees:
+        _derive_fund_hwm(conn)
+        conn.commit()
+        return 0.0
+    gp = conn.execute("SELECT id FROM lps WHERE is_gp=1 ORDER BY id LIMIT 1").fetchone()
+    if not gp:
+        raise ValueError("Set a GP first")
+    timestamp = _event_timestamp(ts)
+    accrual_date = _accrual_date(ts)
+    total_fee = 0.0
+    for lp, lp_units, hwm, fee in fees:
+        redeemed = fee / nav_per_unit
         conn.execute(
-            "INSERT INTO fee_events(ts,kind,amount,hwm_before,hwm_after,note) "
-            "VALUES (?,?,?,?,?,?)",
+            "INSERT INTO lp_units(lp_id,ts,units,nav_per_unit) VALUES (?,?,?,?)",
+            (lp["id"], timestamp, -redeemed, nav_per_unit),
+        )
+        conn.execute(
+            "INSERT INTO lp_units(lp_id,ts,units,nav_per_unit) VALUES (?,?,?,?)",
+            (gp["id"], timestamp, redeemed, nav_per_unit),
+        )
+        conn.execute(
+            "UPDATE lps SET hwm=? WHERE id=?",
+            (nav_per_unit, lp["id"]),
+        )
+        _upsert_accrual(conn, lp["id"], accrual_date, perf=fee)
+        conn.execute(
+            "INSERT INTO fee_events(ts,kind,amount,hwm_before,hwm_after,note,lp_id) "
+            "VALUES (?,?,?,?,?,?,?)",
             (
-                _event_timestamp(ts),
+                timestamp,
                 "perf",
                 fee,
                 hwm,
                 nav_per_unit,
                 "Performance fee crystallization",
+                lp["id"],
             ),
         )
-        set_setting(conn, "hwm_per_unit", nav_per_unit)
-        conn.commit()
-    return fee
+        total_fee += fee
+    _derive_fund_hwm(conn)
+    conn.commit()
+    return total_fee
 
 
 def settle_fees(conn, ts):
@@ -191,6 +313,12 @@ def fee_scenario(
     net_end_npu = npu_after_mgmt - perf_fee / units if units else npu_after_mgmt
     net_to_lps = net_end_npu * units
     return {
+        "starting_nav": starting_nav,
+        "starting_nav_per_unit": starting_nav_per_unit,
+        "units": units,
+        "gross_end_npu": gross_end_npu,
+        "npu_after_mgmt": npu_after_mgmt,
+        "net_end_npu": net_end_npu,
         "gross_pnl": gross_pnl,
         "mgmt_fee": mgmt_fee,
         "perf_fee": perf_fee,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Iterable, Mapping
 
 
 @dataclass
@@ -13,7 +13,7 @@ class Position:
 
 
 def _value(trade: Mapping, key: str, default=0):
-    if hasattr(trade, "keys") and key in trade.keys():
+    if hasattr(trade, "keys") and key in trade.keys():  # noqa: SIM118
         return trade[key]
     if hasattr(trade, "get"):
         return trade.get(key, default)
