@@ -14,7 +14,7 @@ from app.db import get_conn, init_db
 from app.fees import record_cash_flow
 from app.nav import take_snapshot
 from app.positions import build_positions
-from app.pricing import refresh_prices
+from app.pricing import fetch_benchmark_history, refresh_prices
 
 NYSE_HOLIDAYS = holidays.financial_holidays("NYSE")
 
@@ -102,12 +102,35 @@ def backfill_history(conn, count, history_days=None):
                 investor_b,
                 "Investor B mid-history contribution",
             )
-        take_snapshot(conn, day, "scheduled", refresh=False)
+        take_snapshot(conn, day, "scheduled", refresh=False, fetch_benchmark=False)
     for instrument_id, mark in original_manual.items():
         conn.execute(
             "UPDATE instruments SET manual_mark=?,manual_mark_at=? WHERE id=?",
             (mark, datetime.now(UTC).isoformat(), instrument_id),
         )
+    conn.commit()
+
+
+async def backfill_benchmark(conn):
+    row = conn.execute(
+        "SELECT value FROM settings WHERE key='benchmark_symbol'"
+    ).fetchone()
+    symbol = str(row["value"] if row else "").strip().upper()
+    if not symbol:
+        return
+    try:
+        closes = await fetch_benchmark_history(symbol, "1y")
+    except (RuntimeError, OSError):
+        return
+    dates = [
+        row["date"]
+        for row in conn.execute("SELECT date FROM nav_snapshots ORDER BY date").fetchall()
+    ]
+    conn.executemany(
+        "INSERT INTO benchmark_closes(symbol,date,close) VALUES (?,?,?) "
+        "ON CONFLICT(symbol,date) DO UPDATE SET close=excluded.close",
+        [(symbol, snapshot_date, closes.get(snapshot_date)) for snapshot_date in dates],
+    )
     conn.commit()
 
 
@@ -121,6 +144,7 @@ def main():
     conn.execute("DELETE FROM fee_events")
     conn.execute("DELETE FROM lp_fee_accruals")
     conn.execute("DELETE FROM nav_snapshots")
+    conn.execute("DELETE FROM benchmark_closes")
     conn.execute("DELETE FROM lp_units")
     conn.execute("DELETE FROM trades")
     conn.execute("DELETE FROM cash_flows")
@@ -198,6 +222,8 @@ def main():
         )
     conn.commit()
     backfill_history(conn, args.history, history_days)
+    if args.history:
+        asyncio.run(backfill_benchmark(conn))
     failed = asyncio.run(refresh_prices(conn))
     conn.close()
     print(f"Seeded demo book. Failed price symbols: {', '.join(failed) or 'none'}")

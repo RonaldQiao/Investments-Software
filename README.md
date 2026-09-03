@@ -23,7 +23,9 @@ eligible trading day when its snapshot is missing. The History page exports
 the snapshot series as CSV.
 
 The P&L page (`/pnl`) attributes daily mark and realized P&L by instrument and
-asset class, with a CSV export. Capital rows link to LP statements showing
+asset class, with a CSV export. The History page can compare daily returns with
+the configurable benchmark (SPY by default), including excess return and beta;
+clear the benchmark symbol in Settings to disable it. Capital rows link to LP statements showing
 units, value, flows, fee terms, high-water mark, fees paid, and simple return
 on net contributions. Money-weighted return is intentionally out of scope.
 
@@ -37,6 +39,10 @@ explicit symbol use OCC symbols such as `AAPL261218C00200000`.
 Use `make backup` (or `POST /backup` in Settings) to create a SQLite backup in
 `data/backups/`. Only the newest 20 backups are retained. GitHub Actions runs
 the test suite on every push and pull request.
+
+`make backfill-benchmark` downloads one year of benchmark closes for existing
+snapshot dates. Demo history seeding performs the same backfill when online and
+continues silently when Yahoo is unavailable.
 
 Contributions and withdrawals issue or redeem LP units at the current NAV/unit,
 so capital flows do not change the time-weighted return series. Each LP may

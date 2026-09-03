@@ -14,6 +14,9 @@ def client(tmp_path, monkeypatch):
     from app.main import app
 
     with TestClient(app) as test_client:
+        conn = db.get_conn()
+        db.set_setting(conn, "benchmark_symbol", "")
+        conn.close()
         yield test_client
 
 

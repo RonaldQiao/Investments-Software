@@ -127,6 +127,12 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
           status TEXT NOT NULL CHECK(status IN ('ok','partial','failed')),
           detail TEXT NOT NULL DEFAULT ''
         );
+        CREATE TABLE IF NOT EXISTS benchmark_closes (
+          symbol TEXT NOT NULL,
+          date TEXT NOT NULL,
+          close REAL,
+          PRIMARY KEY (symbol, date)
+        );
         CREATE TABLE IF NOT EXISTS settings (
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL
@@ -170,6 +176,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         "snapshot_enabled": "1",
         "last_refresh_failures": "[]",
         "last_refresh_at": "",
+        "benchmark_symbol": "SPY",
     }
     conn.executemany(
         "INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",

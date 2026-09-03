@@ -13,6 +13,7 @@ def book():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     init_db(conn)
+    set_setting(conn, "benchmark_symbol", "")
     set_setting(conn, "mgmt_fee_bps", 0)
     principal = conn.execute(
         "SELECT id FROM lps WHERE name='Principal'"

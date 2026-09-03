@@ -18,3 +18,6 @@ lint:
 
 backup:
 	$(PYTHON) scripts/backup.py
+
+backfill-benchmark:
+	$(PYTHON) scripts/backfill_benchmark.py

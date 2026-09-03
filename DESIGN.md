@@ -19,6 +19,7 @@ app/
   db.py          connection, schema (idempotent CREATE), helpers
   positions.py   trades -> open positions (net qty, avg cost, realized P&L)
   pricing.py     Yahoo fetch (batched, async), manual marks, `prices` cache
+  benchmark.py   benchmark return pairing and beta calculations
   nav.py         NAV, exposure, snapshots, daily return series, CSV export
   fees.py        units-based LP ledger, mgmt fee accrual, perf fee w/ HWM
   attribution.py P&L attribution from audited snapshot marks and trades
@@ -34,7 +35,7 @@ data/ledger.db   (gitignored)
 ```
 instruments   id, symbol, name, asset_class, currency, multiplier (1; 100 options; 50 ES ...),
               pricing_source ('yahoo'|'manual'), yahoo_symbol, manual_mark,
-              manual_mark_at, notes
+              manual_mark_at, notes, underlying, expiry, strike, option_type
               asset_class ∈ equity, etf, bond, credit, option, future, commodity, crypto, fx, other
 trades        id, instrument_id, ts, side ('BUY'|'SELL'), quantity, price, fees, notes
 prices        instrument_id PK, price, ts, source          (latest mark only)
@@ -49,9 +50,10 @@ fee_events    id, ts, kind ('mgmt'|'perf'|'settle'), amount, hwm_before, hwm_aft
 lp_fee_accruals lp_id, date, mgmt, perf (primary key lp_id/date)
 job_log       id, ts, job ('scheduled'|'catch-up'), status ('ok'|'partial'|'failed'),
               detail (failed symbols or error text)
+benchmark_closes symbol, date, close (primary key symbol/date)
 settings      key PK, value   (leverage, borrow_rate, fund_name, mgmt_fee_bps,
                                perf_fee_pct, hwm_per_unit, inception_nav_per_unit=1000,
-                               last_refresh_failures, last_refresh_at)
+                               last_refresh_failures, last_refresh_at, benchmark_symbol=SPY)
 ```
 
 ## Accounting rules
