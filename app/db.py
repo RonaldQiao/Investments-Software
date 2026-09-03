@@ -105,6 +105,13 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
           hwm_after REAL,
           note TEXT
         );
+        CREATE TABLE IF NOT EXISTS job_log (
+          id INTEGER PRIMARY KEY,
+          ts TEXT NOT NULL,
+          job TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('ok','partial','failed')),
+          detail TEXT NOT NULL DEFAULT ''
+        );
         CREATE TABLE IF NOT EXISTS settings (
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL

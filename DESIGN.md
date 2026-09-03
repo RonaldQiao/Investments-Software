@@ -21,6 +21,7 @@ app/
   pricing.py     Yahoo fetch (batched, async), manual marks, `prices` cache
   nav.py         NAV, exposure, snapshots, daily return series, CSV export
   fees.py        units-based LP ledger, mgmt fee accrual, perf fee w/ HWM
+  attribution.py P&L attribution from audited snapshot marks and trades
   scheduler.py   EOD job (16:00 NY, weekdays, non-holiday), missed-run catch-up
   templates/     base, dashboard, positions, trades, capital, fees, history, settings
   static/        style.css, app.js
@@ -45,6 +46,8 @@ nav_snapshots date PK, ts, nav, cash, gross_long, gross_short, net_exposure,
               levered_return, mgmt_fee_accrued, source ('scheduled'|'manual')
 snapshot_marks date, instrument_id, mark, source ('yahoo'|'manual'|'snapshot'|'fallback')
 fee_events    id, ts, kind ('mgmt'|'perf'|'settle'), amount, hwm_before, hwm_after, note
+job_log       id, ts, job ('scheduled'|'catch-up'), status ('ok'|'partial'|'failed'),
+              detail (failed symbols or error text)
 settings      key PK, value   (leverage, borrow_rate, fund_name, mgmt_fee_bps,
                                perf_fee_pct, hwm_per_unit, inception_nav_per_unit=1000,
                                last_refresh_failures, last_refresh_at)
@@ -87,6 +90,18 @@ settings      key PK, value   (leverage, borrow_rate, fund_name, mgmt_fee_bps,
   run a catch-up snapshot using the latest available closes. A "Snapshot now" button
   writes a manual snapshot for today.
 - **Export**: `/history.csv` — the nav_snapshots table.
+- **P&L attribution.** `/pnl` compares consecutive audited `snapshot_marks`.
+  For each date and instrument it marks the position quantity at the end of the
+  Eastern date against the prior mark, then adds realized P&L from trades
+  executed that date. The page and `/pnl.csv` aggregate by instrument and asset
+  class. Missing audited marks are omitted rather than fetched during
+  attribution.
+- **Job audit.** Scheduled and startup catch-up refreshes retry failed symbols
+  up to three attempts, then snapshot using the normal audited fallback logic.
+  Each run is recorded in `job_log`; this table is operational metadata and
+  does not affect accounting.
+- **Backups.** `make backup` and Settings use SQLite's online `Connection.backup`
+  API to write timestamped files under `data/backups/`, retaining the newest 20.
 
 ## Aesthetics
 

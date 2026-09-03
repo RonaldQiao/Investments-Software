@@ -22,6 +22,15 @@ and writes an idempotent EOD snapshot. On startup, it catches up the latest
 eligible trading day when its snapshot is missing. The History page exports
 the snapshot series as CSV.
 
+The P&L page (`/pnl`) attributes daily mark and realized P&L by instrument and
+asset class, with a CSV export. Capital rows link to LP statements showing
+units, value, flows, and simple return on net contributions. Money-weighted
+return is intentionally out of scope.
+
+Use `make backup` (or `POST /backup` in Settings) to create a SQLite backup in
+`data/backups/`. Only the newest 20 backups are retained. GitHub Actions runs
+the test suite on every push and pull request.
+
 Contributions and withdrawals issue or redeem LP units at the current NAV/unit,
 so capital flows do not change the time-weighted return series. Positions are
 derived from trades using average cost; see [DESIGN.md](DESIGN.md) for the

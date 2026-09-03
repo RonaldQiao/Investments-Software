@@ -12,3 +12,6 @@ seed:
 
 test:
 	$(PYTHON) -m pytest
+
+backup:
+	$(PYTHON) scripts/backup.py

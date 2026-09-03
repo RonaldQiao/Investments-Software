@@ -26,12 +26,26 @@ def test_pages_and_apis(client):
         "/capital",
         "/fees",
         "/history",
+        "/pnl",
         "/history.csv",
         "/api/portfolio",
         "/api/history",
     ):
         response = client.get(path)
         assert response.status_code == 200, path
+
+
+def test_lp_statement_route_and_calculation(client):
+    response = client.post(
+        "/capital",
+        data={"lp_id": "1", "flow_type": "Contribution", "amount": "1000", "flow_date": "2026-01-02"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    statement = client.get("/lps/1/statement")
+    assert statement.status_code == 200
+    assert "simple return on net contributions" in statement.text.lower()
+    assert client.get("/lps/1/statement.csv").status_code == 200
 
 
 def test_trade_at_mark_is_nav_neutral_and_snapshot_is_written(client):
