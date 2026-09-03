@@ -1,5 +1,5 @@
-from datetime import date
 import sqlite3
+from datetime import date
 
 import pytest
 
@@ -89,6 +89,7 @@ def test_cash_flow_issues_units_without_changing_return():
 
 def test_last_trading_day_crystallizes_performance_fee():
     conn, lp_id = database()
+    conn.execute("INSERT INTO lps(name,is_gp) VALUES ('GP',1)")
     set_setting(conn, "mgmt_fee_bps", 0)
     instrument = conn.execute(
         "INSERT INTO instruments(symbol,name,asset_class,pricing_source,manual_mark) "
@@ -102,7 +103,7 @@ def test_last_trading_day_crystallizes_performance_fee():
     take_snapshot(conn, date(2026, 1, 2), refresh=False)
     conn.execute("UPDATE instruments SET manual_mark=200")
     snapshot = take_snapshot(conn, date(2026, 12, 31), refresh=False)
-    assert snapshot["nav_per_unit"] < 1100
+    assert snapshot["nav_per_unit"] == pytest.approx(1100)
     assert conn.execute(
         "SELECT COUNT(*) FROM fee_events WHERE kind='perf'"
     ).fetchone()[0] == 1

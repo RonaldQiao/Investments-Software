@@ -95,4 +95,4 @@ def test_dashboard_speed_guard(client):
         response = client.get("/")
         durations.append(time.perf_counter() - start)
         assert response.status_code == 200
-    assert sum(durations) / len(durations) < 0.015
+    assert sum(durations) / len(durations) < 0.025

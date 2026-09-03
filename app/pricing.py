@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import httpx
 
-from .db import get_conn, set_setting
+from .db import set_setting
 
 
 def occ_symbol(underlying, expiry, option_type, strike):
@@ -75,7 +75,7 @@ async def refresh_prices(conn) -> list[str]:
     ).fetchall()
     symbols = [yahoo_symbol_for(row) for row in rows]
     quotes = await fetch_yahoo(symbols) if symbols else {}
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     failed = []
     for row in rows:
         symbol = yahoo_symbol_for(row)

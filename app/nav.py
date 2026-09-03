@@ -5,20 +5,20 @@ import csv
 import io
 import json
 import math
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 from .db import get_setting, set_setting
-from .pricing import refresh_prices, yahoo_symbol_for
 from .positions import build_positions, cash_from_trades
+from .pricing import refresh_prices, yahoo_symbol_for
 
 
 def _price_age_seconds(ts, now):
     if not ts:
         return None
     try:
-        parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(ts))
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
         return max(0.0, (now - parsed).total_seconds())
     except ValueError:
         return None
@@ -26,7 +26,7 @@ def _price_age_seconds(ts, now):
 
 def compute_portfolio(conn, mark_overrides=None):
     mark_overrides = mark_overrides or {}
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     try:
         failed_symbols = set(json.loads(get_setting(conn, "last_refresh_failures", "[]")))
     except (TypeError, json.JSONDecodeError):
@@ -218,19 +218,6 @@ def take_snapshot(
     first_snapshot = existing is None and not conn.execute(
         "SELECT 1 FROM nav_snapshots LIMIT 1"
     ).fetchone()
-    if existing is None and not first_snapshot:
-        fee = gross_nav * float(get_setting(conn, "mgmt_fee_bps", 200)) / 10000 / 252
-        liability += fee
-        set_setting(conn, "fee_liability", liability)
-        conn.execute(
-            "INSERT INTO fee_events(ts,kind,amount,note) VALUES (?,?,?,?)",
-            (
-                datetime.now(timezone.utc).isoformat(),
-                "mgmt",
-                fee,
-                f"Management fee for {snapshot_date.isoformat()}",
-            ),
-        )
     units = float(
         conn.execute("SELECT COALESCE(SUM(units),0) units FROM lp_units").fetchone()[
             "units"
@@ -242,12 +229,25 @@ def take_snapshot(
         lp_id = conn.execute("SELECT id FROM lps WHERE name='Principal'").fetchone()["id"]
         conn.execute(
             "INSERT INTO lp_units(lp_id,ts,units,nav_per_unit) VALUES (?,?,?,?)",
-            (lp_id, datetime.now(timezone.utc).isoformat(), units, inception),
+            (lp_id, datetime.now(UTC).isoformat(), units, inception),
         )
+    mgmt_fee_accrued = 0.0
+    if existing is None and not first_snapshot:
+        from .fees import accrue_management_fees
+
+        fee = accrue_management_fees(
+            conn,
+            snapshot_date,
+            gross_nav,
+            (gross_nav - liability) / units if units else 0,
+        )
+        liability += fee
+        set_setting(conn, "fee_liability", liability)
+        mgmt_fee_accrued = fee
     if existing is None and _is_last_trading_day_of_year(snapshot_date):
         from .fees import crystallize_perf_fee
 
-        crystallize_perf_fee(conn, datetime.now(timezone.utc))
+        crystallize_perf_fee(conn, datetime.now(UTC))
         liability = float(get_setting(conn, "fee_liability", 0) or 0)
     net_nav = gross_nav - liability
     nav_per_unit = net_nav / units if units else 0
@@ -271,20 +271,11 @@ def take_snapshot(
         "SELECT COALESCE(SUM(amount),0) amount FROM cash_flows WHERE substr(ts,1,10)=?",
         (snapshot_date.isoformat(),),
     ).fetchone()["amount"]
-    mgmt_fee_accrued = (
-        float(
-            conn.execute(
-                "SELECT amount FROM fee_events WHERE kind='mgmt' AND note=? "
-                "ORDER BY id DESC LIMIT 1",
-                (f"Management fee for {snapshot_date.isoformat()}",),
-            ).fetchone()["amount"]
-        )
-        if existing is None and not first_snapshot
-        else (0.0 if first_snapshot else float(existing["mgmt_fee_accrued"]))
-    )
+    if existing is not None:
+        mgmt_fee_accrued = float(existing["mgmt_fee_accrued"])
     values = {
         "date": snapshot_date.isoformat(),
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": datetime.now(UTC).isoformat(),
         "nav": net_nav,
         "cash": portfolio["cash"],
         "gross_long": portfolio["gross_long"],

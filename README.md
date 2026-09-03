@@ -1,7 +1,7 @@
 # Ledger
 
 Ledger is a local-first, single-user portfolio tracker. It stores trades,
-prices, NAV snapshots, capital flows, LP units, and fund-level fees in SQLite.
+prices, NAV snapshots, capital flows, LP units, and per-LP fees in SQLite.
 The accounting rules are specified in [DESIGN.md](DESIGN.md).
 
 ## Run
@@ -24,8 +24,8 @@ the snapshot series as CSV.
 
 The P&L page (`/pnl`) attributes daily mark and realized P&L by instrument and
 asset class, with a CSV export. Capital rows link to LP statements showing
-units, value, flows, and simple return on net contributions. Money-weighted
-return is intentionally out of scope.
+units, value, flows, fee terms, high-water mark, fees paid, and simple return
+on net contributions. Money-weighted return is intentionally out of scope.
 
 The Update page (`/update`) is the daily workflow: review marks, enter a
 one-line-per-trade blotter, refresh prices, and write a snapshot. Blotter lines
@@ -39,12 +39,16 @@ Use `make backup` (or `POST /backup` in Settings) to create a SQLite backup in
 the test suite on every push and pull request.
 
 Contributions and withdrawals issue or redeem LP units at the current NAV/unit,
-so capital flows do not change the time-weighted return series. Positions are
-derived from trades using average cost; see [DESIGN.md](DESIGN.md) for the
-complete accounting rules.
+so capital flows do not change the time-weighted return series. Each LP may
+override the default management fee (basis points) and performance fee
+(percent); a GP LP is excluded from both. Performance fees redeem the paying
+LP's units and issue equivalent GP units, leaving NAV/unit unchanged. Each LP
+has its own NAV/unit high-water mark, initialized on first contribution.
+Positions are derived from trades using average cost; see
+[DESIGN.md](DESIGN.md) for the complete accounting rules.
 
 ## Limitations
 
 - Single-user, local SQLite application.
-- Performance fees use a fund-level high-water mark.
+- Performance fees use per-LP high-water marks and fee terms.
 - No FX conversion; values are treated as one currency.

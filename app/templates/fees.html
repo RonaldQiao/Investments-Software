@@ -5,15 +5,20 @@
 <form class="form-grid" method="post" action="/fees/terms">
   <label>Management fee (bps)<input name="mgmt_fee_bps" type="number" step="1" min="0" value="{{ settings.mgmt_fee_bps }}"></label>
   <label>Performance fee (%)<input name="perf_fee_pct" type="number" step=".1" min="0" value="{{ settings.perf_fee_pct }}"></label>
-  <label>HWM NAV/unit<input value="{{ settings.hwm_per_unit }}" readonly></label>
   <label>GP LP<select name="gp_id"><option value="">None</option>{% for lp in lps %}<option value="{{ lp.id }}" {{ "selected" if lp.is_gp else "" }}>{{ lp.name }}</option>{% endfor %}</select></label>
   <div><label>&nbsp;</label><button>Save terms</button></div>
 </form>
-<form class="inline" method="post" action="/fees/lps"><input name="name" placeholder="New LP name" required><button>Add LP</button></form>
+<p class="meta">Management fees accrue to the fund liability and can be settled here. Performance fees are crystallized through LP unit redemption and GP unit issuance.</p>
+<form class="form-grid" method="post" action="/fees/lps">
+  <label>New LP name<input name="name" required></label>
+  <label>Management fee (bps)<input name="mgmt_fee_bps" type="number" step="1" min="0" placeholder="Default"></label>
+  <label>Performance fee (%)<input name="perf_fee_pct" type="number" step=".1" min="0" placeholder="Default"></label>
+  <div><label>&nbsp;</label><button>Add LP</button></div>
+</form>
 <h2>Ownership</h2>
-<table><thead><tr><th>LP</th><th class="num">Units</th><th class="num">% of fund</th><th class="num">Current value</th><th class="num">Contributed</th><th class="num">Withdrawn</th><th class="num">P&amp;L</th></tr></thead><tbody>
-{% for lp in ownership.rows %}<tr><td class="person">{{ lp.name }}{% if lp.is_gp and lp.name != "GP" %}<small> · GP</small>{% endif %}</td><td class="num">{{ lp.units|number(4) }}</td><td class="num">{{ (lp.percentage * 100)|number(2) }}%</td><td class="num">{{ lp.value|number }}</td><td class="num">{{ lp.contributed|number }}</td><td class="num">{{ lp.withdrawn|number }}</td><td class="num {{ 'negative' if lp.pnl < 0 }}">{{ lp.pnl|number }}</td></tr>{% else %}<tr><td colspan="7" class="empty">No LPs.</td></tr>{% endfor %}
-<tr class="total"><th>Total</th><th class="num">{{ ownership.total_units|number(4) }}</th><th class="num">100.00%</th><th class="num">{{ ownership.total_value|number }}</th><th></th><th></th><th></th></tr>
+<table><thead><tr><th>LP</th><th class="num">Units</th><th class="num">Mgmt bps</th><th class="num">Perf %</th><th class="num">HWM</th><th class="num">% of fund</th><th class="num">Current value</th><th class="num">P&amp;L</th></tr></thead><tbody>
+{% for lp in ownership.rows %}<tr><td class="person">{{ lp.name }}{% if lp.is_gp and lp.name != "GP" %}<small> · GP</small>{% endif %}</td><td class="num">{{ lp.units|number(4) }}</td><td class="num">{{ "—" if lp.is_gp else (lp.mgmt_fee_bps if lp.mgmt_fee_bps is not none else settings.mgmt_fee_bps) }}</td><td class="num">{{ "—" if lp.is_gp else (lp.perf_fee_pct if lp.perf_fee_pct is not none else settings.perf_fee_pct) }}</td><td class="num">{{ lp.hwm|number if lp.hwm is not none else "—" }}</td><td class="num">{{ (lp.percentage * 100)|number(2) }}%</td><td class="num">{{ lp.value|number }}</td><td class="num {{ 'negative' if lp.pnl < 0 }}">{{ lp.pnl|number }}</td></tr>{% else %}<tr><td colspan="8" class="empty">No LPs.</td></tr>{% endfor %}
+<tr class="total"><th>Total</th><th class="num">{{ ownership.total_units|number(4) }}</th><th colspan="3"></th><th class="num">100.00%</th><th class="num">{{ ownership.total_value|number }}</th><th></th></tr>
 </tbody></table>
 <h2>Accruals</h2>
 <section class="headline compact">
@@ -21,7 +26,7 @@
   <div><label>Management fees accrued</label><strong>{{ mgmt_accrued|number }}</strong></div>
   <div><label>Performance fees crystallized</label><strong>{{ perf_accrued|number }}</strong></div>
 </section>
-<div class="actions"><form class="inline" method="post" action="/fees/crystallize"><button>Crystallize performance fee now</button></form><form class="inline" method="post" action="/fees/settle"><button>Pay fees to GP</button></form></div>
+<div class="actions"><form class="inline" method="post" action="/fees/crystallize"><button>Crystallize performance fee now</button></form><form class="inline" method="post" action="/fees/settle"><button>Pay management fees to GP</button></form></div>
 <h2>Calculator</h2>
 <form class="form-grid calculator" method="get" action="/fees">
   <label>Starting NAV<input name="starting_nav" type="number" step=".01" value="{{ request.query_params.get('starting_nav', '') }}" required></label>
@@ -33,4 +38,5 @@
   <div><label>&nbsp;</label><button>Calculate</button></div>
 </form>
 {% if calc %}<table class="calc-results"><tbody><tr><th>Gross P&amp;L</th><td class="num">{{ calc.gross_pnl|number }}</td></tr><tr><th>Management fee</th><td class="num">{{ calc.mgmt_fee|number }}</td></tr><tr><th>Performance fee</th><td class="num">{{ calc.perf_fee|number }}</td></tr><tr><th>Net to LPs</th><td class="num">{{ calc.net_to_lps|number }}</td></tr><tr><th>Net return</th><td class="num">{{ calc.net_return_pct|number(2) }}%</td></tr><tr><th>GP take</th><td class="num">{{ calc.gp_take|number }}</td></tr><tr><th>New HWM NAV/unit</th><td class="num">{{ calc.new_hwm|number }}</td></tr></tbody></table>{% endif %}
+{% if calc_lp_rows %}<h3>Per-LP performance fees</h3><table><thead><tr><th>LP</th><th class="num">Units</th><th class="num">HWM</th><th class="num">Above-HWM gain</th><th class="num">Perf fee</th><th class="num">New HWM</th></tr></thead><tbody>{% for lp in calc_lp_rows %}<tr><td>{{ lp.name }}</td><td class="num">{{ lp.units|number(4) }}</td><td class="num">{{ lp.hwm|number }}</td><td class="num">{{ lp.gain|number }}</td><td class="num">{{ lp.perf_fee|number }}</td><td class="num">{{ lp.new_hwm|number }}</td></tr>{% endfor %}</tbody></table>{% endif %}
 {% endblock %}

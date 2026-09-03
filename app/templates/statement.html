@@ -1,9 +1,10 @@
 {% extends "base.html" %}{% set title="LP statement" %}
 {% block actions %}<div class="page-actions"><a class="button" href="/lps/{{ lp.id }}/statement.csv">Export CSV</a></div>{% endblock %}
 {% block content %}
-<p class="meta">{{ lp.name }} · as of {{ as_of }}</p>
+<p class="meta">{{ lp.name }} · as of {{ as_of }}{% if lp.is_gp %} · GP{% endif %}</p>
 <div class="headline"><div><label>Units</label><strong>{{ owner.units|number(4) }}</strong></div><div><label>NAV/unit</label><strong>{{ (owner.value / owner.units if owner.units else 0)|number }}</strong></div><div><label>Value</label><strong>{{ owner.value|number }}</strong></div><div><label>Ownership</label><strong>{{ (owner.percentage * 100)|number(2) }}%</strong></div></div>
 <div class="headline"><div><label>Total contributed</label><strong>{{ owner.contributed|number }}</strong></div><div><label>Total withdrawn</label><strong>{{ owner.withdrawn|number }}</strong></div><div><label>Net contributions</label><strong>{{ net_contributions|number }}</strong></div><div><label>Simple return</label><strong>{{ (simple_return * 100)|number(2) if simple_return is not none else "—" }}{% if simple_return is not none %}%{% endif %}</strong></div></div>
+<table><thead><tr><th>Fee terms</th><th class="num">Management bps</th><th class="num">Performance %</th><th class="num">HWM NAV/unit</th><th class="num">Fees paid to date</th></tr></thead><tbody><tr><td>{{ "GP pays no fees" if lp.is_gp else "Per-LP terms" }}</td><td class="num">{{ "—" if lp.is_gp else (lp.mgmt_fee_bps if lp.mgmt_fee_bps is not none else "Default") }}</td><td class="num">{{ "—" if lp.is_gp else (lp.perf_fee_pct if lp.perf_fee_pct is not none else "Default") }}</td><td class="num">{{ lp.hwm|number if lp.hwm is not none else "—" }}</td><td class="num">{{ owner.fees_paid|number }}</td></tr></tbody></table>
 <p class="meta">Simple return on net contributions. Money-weighted return is out of scope.</p>
 <h2>Capital flows</h2>
 <table><thead><tr><th>Date</th><th class="num">Amount</th><th>Note</th></tr></thead><tbody>{% for flow in flows %}<tr><td>{{ flow.ts[:10] }}</td><td class="num {{ 'negative' if flow.amount < 0 }}">{{ flow.amount|number }}</td><td>{{ flow.note or "" }}</td></tr>{% else %}<tr><td colspan="3" class="empty">No capital flows.</td></tr>{% endfor %}</tbody></table>

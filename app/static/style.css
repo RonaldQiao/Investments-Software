@@ -6,6 +6,7 @@
 .actions-cell details+details:before{content:"·";color:#999;margin-right:8px}
 input[type=range],input[type=checkbox]{accent-color:#000}
  .page-actions{display:flex;gap:12px;align-items:center}
+input[type=date]{-webkit-appearance:none;appearance:none}.blotter-label{display:block;margin-top:16px}
 main>.page-head+h2{border-top:0;padding-top:0}
 main>.page-head+.headline{border-top:0}
 th.num{text-align:right}

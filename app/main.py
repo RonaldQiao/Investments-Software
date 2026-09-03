@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import csv
 import io
-import json
 import os
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -33,12 +31,16 @@ from .nav import (
     history_series,
     take_snapshot,
 )
-from .pricing import refresh_prices
 from .positions import build_positions
+from .pricing import refresh_prices
 from .scheduler import (
     catch_up_async,
     next_snapshot_label,
+)
+from .scheduler import (
     start as start_scheduler,
+)
+from .scheduler import (
     stop as stop_scheduler,
 )
 
@@ -197,7 +199,7 @@ async def update_marks(request: Request):
             mark = float(value)
             mark_date = str(form.get(f"mark_date_{instrument_id}") or "").strip()
             timestamp = (
-                f"{mark_date}T12:00:00" if mark_date else datetime.now(timezone.utc).isoformat()
+                f"{mark_date}T12:00:00" if mark_date else datetime.now(UTC).isoformat()
             )
             conn.execute(
                 "UPDATE instruments SET manual_mark=?,manual_mark_at=? WHERE id=?",
@@ -228,7 +230,7 @@ async def update_blotter(request: Request):
                 raise ValueError(
                     f"Unknown symbol on line {trade['line']}: {trade['symbol']}"
                 )
-        timestamp = datetime.now(timezone.utc).isoformat()
+        timestamp = datetime.now(UTC).isoformat()
         conn.execute("BEGIN")
         conn.executemany(
             "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) "
@@ -459,6 +461,7 @@ def lp_statement_context(conn, lp_id: int):
         )
     )
     net = owner["contributed"] - owner["withdrawn"]
+    owner["fees_paid"] = owner["mgmt_fees"] + owner["perf_fees"]
     return {
         "lp": dict(lp),
         "as_of": latest or datetime.now(ZoneInfo("America/New_York")).date().isoformat(),
@@ -488,9 +491,43 @@ def lp_statement_csv(lp_id: int):
         return Response("LP not found\n", status_code=404, media_type="text/plain")
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["LP", "As of", "Units", "NAV/unit", "Value", "% ownership", "Contributed", "Withdrawn", "Net contributions", "Simple return"])
+    writer.writerow(
+        [
+            "LP",
+            "As of",
+            "Units",
+            "NAV/unit",
+            "Value",
+            "% ownership",
+            "Contributed",
+            "Withdrawn",
+            "Net contributions",
+            "Simple return",
+            "Management bps",
+            "Performance %",
+            "HWM NAV/unit",
+            "Fees paid",
+        ]
+    )
     owner = data["owner"]
-    writer.writerow([data["lp"]["name"], data["as_of"], owner["units"], owner["value"] / owner["units"] if owner["units"] else 0, owner["value"], owner["percentage"], owner["contributed"], owner["withdrawn"], data["net_contributions"], data["simple_return"] if data["simple_return"] is not None else ""])
+    writer.writerow(
+        [
+            data["lp"]["name"],
+            data["as_of"],
+            owner["units"],
+            owner["value"] / owner["units"] if owner["units"] else 0,
+            owner["value"],
+            owner["percentage"],
+            owner["contributed"],
+            owner["withdrawn"],
+            data["net_contributions"],
+            data["simple_return"] if data["simple_return"] is not None else "",
+            owner["mgmt_fee_bps"],
+            owner["perf_fee_pct"],
+            owner["hwm"],
+            owner["fees_paid"],
+        ]
+    )
     writer.writerow([])
     writer.writerow(["Date", "Amount", "Note"])
     for flow in data["flows"]:
@@ -511,6 +548,8 @@ def add_capital_flow(
     flow_type: str = Form("Contribution"),
     amount: float = Form(...),
     note: str = Form(""),
+    new_mgmt_fee_bps: str = Form(""),
+    new_perf_fee_pct: str = Form(""),
 ):
     conn = get_conn()
     try:
@@ -518,13 +557,18 @@ def add_capital_flow(
             name = new_lp.strip()
             if not name:
                 raise ValueError("Enter a name for the new LP")
-            cursor = conn.execute("INSERT INTO lps(name,is_gp) VALUES (?,0)", (name,))
+            mgmt = float(new_mgmt_fee_bps) if new_mgmt_fee_bps.strip() else None
+            perf = float(new_perf_fee_pct) if new_perf_fee_pct.strip() else None
+            cursor = conn.execute(
+                "INSERT INTO lps(name,is_gp,mgmt_fee_bps,perf_fee_pct) VALUES (?,0,?,?)",
+                (name, mgmt, perf),
+            )
             selected_lp = cursor.lastrowid
         else:
             selected_lp = int(lp_id)
         if amount <= 0:
             raise ValueError("Amount must be greater than zero")
-        timestamp = flow_date.strip() or datetime.now(timezone.utc).date().isoformat()
+        timestamp = flow_date.strip() or datetime.now(UTC).date().isoformat()
         signed_amount = amount if flow_type == "Contribution" else -amount
         record_cash_flow(conn, timestamp, signed_amount, selected_lp, note.strip())
     except (ValueError, TypeError, sqlite3.IntegrityError) as exc:
@@ -564,14 +608,40 @@ def fees_context(conn, request: Request):
         for key, default in (
             ("mgmt_fee_bps", "200"),
             ("perf_fee_pct", "20"),
-            ("hwm_per_unit", "1000"),
             ("fee_liability", "0"),
         )
     }
+    lp_ownership = ownership(conn)
+    calc_lp_rows = []
+    if calc:
+        npu_after_mgmt = (
+            float(calc["net_end_npu"]) + float(calc["perf_fee"]) / (calc["units"] or 1)
+        )
+        for lp in lp_ownership["rows"]:
+            if lp["is_gp"] or not lp["units"]:
+                continue
+            hwm = lp["hwm"] if lp["hwm"] is not None else float(calc["starting_nav_per_unit"])
+            gain = max(0.0, npu_after_mgmt - hwm)
+            pct = (
+                float(lp["perf_fee_pct"])
+                if lp["perf_fee_pct"] is not None
+                else float(settings["perf_fee_pct"])
+            )
+            fee = gain * lp["units"] * pct / 100
+            calc_lp_rows.append(
+                {
+                    "name": lp["name"],
+                    "units": lp["units"],
+                    "hwm": hwm,
+                    "gain": gain,
+                    "perf_fee": fee,
+                    "new_hwm": npu_after_mgmt if fee else hwm,
+                }
+            )
     return {
         "settings": settings,
         "lps": row_dicts(conn.execute("SELECT * FROM lps ORDER BY name")),
-        "ownership": ownership(conn),
+        "ownership": lp_ownership,
         "mgmt_accrued": float(
             conn.execute("SELECT COALESCE(SUM(amount),0) FROM fee_events WHERE kind='mgmt'").fetchone()[0]
         ),
@@ -579,6 +649,7 @@ def fees_context(conn, request: Request):
             conn.execute("SELECT COALESCE(SUM(amount),0) FROM fee_events WHERE kind='perf'").fetchone()[0]
         ),
         "calc": calc,
+        "calc_lp_rows": calc_lp_rows,
     }
 
 
@@ -608,10 +679,22 @@ def save_fee_terms(
 
 
 @app.post("/fees/lps")
-def add_lp(name: str = Form(...)):
+def add_lp(
+    name: str = Form(...),
+    mgmt_fee_bps: str = Form(""),
+    perf_fee_pct: str = Form(""),
+):
     conn = get_conn()
     try:
-        conn.execute("INSERT INTO lps(name,is_gp) VALUES (?,0)", (name.strip(),))
+        conn.execute(
+            "INSERT INTO lps(name,is_gp,mgmt_fee_bps,perf_fee_pct) VALUES (?,?,?,?)",
+            (
+                name.strip(),
+                0,
+                float(mgmt_fee_bps) if mgmt_fee_bps.strip() else None,
+                float(perf_fee_pct) if perf_fee_pct.strip() else None,
+            ),
+        )
         conn.commit()
     except sqlite3.IntegrityError:
         pass
@@ -622,7 +705,11 @@ def add_lp(name: str = Form(...)):
 @app.post("/fees/crystallize")
 def crystallize_fees(request: Request):
     conn = get_conn()
-    crystallize_perf_fee(conn, datetime.now(timezone.utc))
+    try:
+        crystallize_perf_fee(conn, datetime.now(UTC))
+    except ValueError as exc:
+        conn.close()
+        return flash_redirect("/fees", "error", str(exc))
     conn.close()
     return RedirectResponse("/fees", status_code=303)
 
@@ -631,7 +718,7 @@ def crystallize_fees(request: Request):
 def settle_fee_liability(request: Request):
     conn = get_conn()
     try:
-        settle_fees(conn, datetime.now(timezone.utc))
+        settle_fees(conn, datetime.now(UTC))
     except ValueError as exc:
         conn.close()
         return flash_redirect("/fees", "error", str(exc))
@@ -765,7 +852,7 @@ def set_mark(instrument_id: int, manual_mark: float = Form(...)):
     conn = get_conn()
     conn.execute(
         "UPDATE instruments SET manual_mark=?,manual_mark_at=? WHERE id=?",
-        (manual_mark, datetime.now(timezone.utc).isoformat(), instrument_id),
+        (manual_mark, datetime.now(UTC).isoformat(), instrument_id),
     )
     conn.commit()
     conn.close()
@@ -791,7 +878,7 @@ def set_position(
             "VALUES (?,?,?,?,?,0,'Set position')",
             (
                 instrument_id,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
                 "BUY" if adjustment > 0 else "SELL",
                 abs(adjustment),
                 price,
@@ -826,7 +913,7 @@ def add_trade(
         "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) VALUES (?,?,?,?,?,?,?)",
         (
             instrument_id,
-            ts or datetime.now(timezone.utc).isoformat(),
+            ts or datetime.now(UTC).isoformat(),
             side,
             quantity,
             price,
@@ -840,7 +927,7 @@ def add_trade(
 
 
 @app.post("/trades/import")
-async def import_trades(file: UploadFile = File(...)):
+async def import_trades(file: UploadFile = File(...)):  # noqa: B008
     conn = get_conn()
     try:
         content = (await file.read()).decode("utf-8-sig")
@@ -1072,7 +1159,7 @@ async def trades_create_api(request: Request):
         "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) VALUES (?,?,?,?,?,?,?)",
         (
             payload["instrument_id"],
-            payload.get("ts") or datetime.now(timezone.utc).isoformat(),
+            payload.get("ts") or datetime.now(UTC).isoformat(),
             payload["side"],
             payload["quantity"],
             payload["price"],

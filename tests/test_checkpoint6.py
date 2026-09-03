@@ -4,11 +4,11 @@ from datetime import date
 
 import pytest
 
+from app import scheduler
 from app.attribution import attribution
 from app.db import init_db, set_setting
 from app.fees import record_cash_flow
 from app.nav import take_snapshot
-from app import scheduler
 
 
 def database():

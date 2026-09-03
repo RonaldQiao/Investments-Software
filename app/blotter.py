@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 
-
 _LINE = re.compile(
     r"^(?P<side>BUY|SELL|SHORT|COVER)\s+"
     r"(?P<quantity>(?:\d+(?:\.\d*)?|\.\d+))\s+"
