@@ -221,6 +221,43 @@ def take_snapshot(
             snapshot_mark_rows.append(
                 (position["instrument_id"], position["avg_price"], "fallback")
             )
+    marked_instruments = {instrument_id for instrument_id, _, _ in snapshot_mark_rows}
+    traded_today = conn.execute(
+        "SELECT DISTINCT instrument_id FROM trades WHERE substr(ts,1,10)=?",
+        (snapshot_date.isoformat(),),
+    ).fetchall()
+    failed_symbols = set(json.loads(get_setting(conn, "last_refresh_failures", "[]") or "[]"))
+    for row in traded_today:
+        instrument_id = row["instrument_id"]
+        if instrument_id in marked_instruments:
+            continue
+        instrument = conn.execute(
+            "SELECT * FROM instruments WHERE id=?", (instrument_id,)
+        ).fetchone()
+        if not instrument:
+            continue
+        mark = None
+        mark_source = "fallback"
+        if instrument["pricing_source"] == "manual" and instrument["manual_mark"] is not None:
+            mark = float(instrument["manual_mark"])
+            mark_source = "manual"
+        else:
+            price = conn.execute(
+                "SELECT price FROM prices WHERE instrument_id=?", (instrument_id,)
+            ).fetchone()
+            if price and yahoo_symbol_for(instrument) not in failed_symbols:
+                mark = float(price["price"])
+                mark_source = "yahoo"
+        if mark is None and instrument_id in previous_marks:
+            mark = float(previous_marks[instrument_id])
+            mark_source = "snapshot"
+        if mark is None:
+            trade = conn.execute(
+                "SELECT price FROM trades WHERE instrument_id=? ORDER BY ts DESC,id DESC LIMIT 1",
+                (instrument_id,),
+            ).fetchone()
+            mark = float(trade["price"]) if trade else 0.0
+        snapshot_mark_rows.append((instrument_id, mark, mark_source))
     portfolio = compute_portfolio(conn, mark_overrides)
     gross_nav = float(portfolio["nav"])
     liability = float(get_setting(conn, "fee_liability", 0) or 0)
