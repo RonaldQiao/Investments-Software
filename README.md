@@ -13,6 +13,10 @@ make run
 make test
 ```
 
+Requires Python 3.11+ (`brew install python@3.12`). `make setup` picks the
+first of `python3.12`, `python3.11`, `python3` on your PATH; override with
+`make setup SYSTEM_PYTHON=/path/to/python3`.
+
 `make run` serves the application at <http://127.0.0.1:8000>. Yahoo marks use
 the symbol stored on each instrument. Futures use symbols such as `ES=F`,
 crypto uses `BTC-USD`, and options are manual instruments.
