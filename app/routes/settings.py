@@ -7,7 +7,8 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from ..db import DB_PATH, DEFAULT_FUND, get_conn, get_setting, set_setting
+from .. import db
+from ..db import get_conn, get_setting, set_setting
 from ..web import flash_redirect, render, row_dicts
 
 router = APIRouter()
@@ -39,10 +40,10 @@ def backup_database():
     source = get_conn()
     database_file = source.execute("PRAGMA database_list").fetchone()["file"]
     backup_dir = Path(
-        os.environ.get("LEDGER_BACKUP_DIR", str(Path(database_file).parent / "backups"))
+        os.environ.get("LEDGER_BACKUP_DIR", str(db.DB_PATH.parent / "backups"))
     )
     backup_dir.mkdir(parents=True, exist_ok=True)
-    fund_slug = DEFAULT_FUND if Path(database_file) == DB_PATH else Path(database_file).stem
+    fund_slug = db.DEFAULT_FUND if Path(database_file) == db.DB_PATH else Path(database_file).stem
     filename = (
         f"ledger-{fund_slug}-"
         f"{datetime.now(ZoneInfo('America/New_York')).strftime('%Y%m%d-%H%M%S')}.db"

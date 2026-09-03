@@ -145,3 +145,32 @@ def test_first_live_snapshot_after_import_skips_fees(tmp_path, monkeypatch):
     )
     assert snapshot["mgmt_fee_accrued"] == 0
     assert snapshot["nav_per_unit"] == pytest.approx(result["navpus"][-1])
+
+
+def test_zero_unit_snapshot_keeps_imported_navpu_and_history_return(tmp_path, monkeypatch):
+    conn = database(tmp_path, monkeypatch)
+    result = import_track_record(
+        conn,
+        [
+            {"date": date(2026, 9, 1), "nav": 1000, "flow": 0},
+            {"date": date(2026, 9, 2), "nav": 1100, "flow": 0},
+        ],
+    )
+    before = history_series(conn)["summary"]["inception_return"]
+    instrument_id = conn.execute(
+        "INSERT INTO instruments(symbol,name,asset_class,pricing_source,manual_mark) "
+        "VALUES ('NEUTRAL','Neutral','other','manual',100)"
+    ).lastrowid
+    conn.execute(
+        "INSERT INTO trades(instrument_id,ts,side,quantity,price) "
+        "VALUES (?,?,'BUY',1,100)",
+        (instrument_id, "2026-09-03T12:00:00"),
+    )
+    conn.commit()
+    snapshot = take_snapshot(
+        conn, date(2026, 9, 3), refresh=False, fetch_benchmark=False
+    )
+    assert snapshot["units_outstanding"] == 0
+    assert snapshot["nav_per_unit"] == pytest.approx(result["navpus"][-1])
+    assert snapshot["daily_return"] is None
+    assert history_series(conn)["summary"]["inception_return"] == pytest.approx(before)

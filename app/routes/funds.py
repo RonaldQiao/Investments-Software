@@ -1,3 +1,5 @@
+from urllib.parse import urlsplit
+
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 
@@ -9,7 +11,8 @@ router = APIRouter()
 
 @router.post("/funds/switch")
 def switch_fund(request: Request, fund: str = Form(...)):
-    response = RedirectResponse(request.headers.get("referer") or "/", status_code=303)
+    referer = request.headers.get("referer")
+    response = RedirectResponse(urlsplit(referer).path or "/" if referer else "/", status_code=303)
     response.set_cookie("fund", fund, max_age=365 * 24 * 60 * 60, path="/", samesite="lax")
     return response
 

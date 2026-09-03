@@ -52,6 +52,13 @@ def test_fund_cookie_isolates_data_and_invalid_cookie_falls_back(tmp_path, monke
             follow_redirects=False,
         )
         assert response.status_code == 303
+        response = client.post(
+            "/funds/switch",
+            data={"fund": "fund-b"},
+            headers={"referer": "http://testserver/settings?ok=Fund%20created"},
+            follow_redirects=False,
+        )
+        assert response.headers["location"] == "/settings"
         client.cookies.set("fund", "fund-b")
         response = client.post(
             "/instruments",
@@ -108,6 +115,20 @@ def test_scheduler_writes_snapshot_for_each_fund(tmp_path, monkeypatch):
         conn = db.get_conn(fund["path"])
         assert conn.execute("SELECT COUNT(*) FROM nav_snapshots").fetchone()[0] == 1
         conn.close()
+
+
+def test_non_default_backup_uses_shared_backup_directory(tmp_path, monkeypatch):
+    configure_funds(tmp_path, monkeypatch)
+    slug = create_fund("Fund B")
+    token = db.ACTIVE_DB.set(db.fund_path(slug))
+    try:
+        from app.main import backup_database
+
+        filename = backup_database()
+    finally:
+        db.ACTIVE_DB.reset(token)
+    assert filename.startswith("ledger-fund-b-")
+    assert (tmp_path / "backups" / filename).exists()
 
 
 def test_snapshot_cli_selects_one_fund(tmp_path, monkeypatch):

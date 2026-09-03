@@ -285,8 +285,8 @@ def take_snapshot(
             "units"
         ]
     )
+    inception = float(get_setting(conn, "inception_nav_per_unit", 1000))
     if units == 0 and gross_nav > 0:
-        inception = float(get_setting(conn, "inception_nav_per_unit", 1000))
         units = (gross_nav - liability) / inception if gross_nav - liability > 0 else 0
         lp_id = conn.execute("SELECT id FROM lps WHERE name='Principal'").fetchone()["id"]
         conn.execute(
@@ -312,21 +312,25 @@ def take_snapshot(
         crystallize_perf_fee(conn, datetime.now(UTC))
         liability = float(get_setting(conn, "fee_liability", 0) or 0)
     net_nav = gross_nav - liability
-    nav_per_unit = net_nav / units if units else 0
     previous = conn.execute(
         "SELECT nav_per_unit FROM nav_snapshots WHERE date<? ORDER BY date DESC LIMIT 1",
         (snapshot_date.isoformat(),),
     ).fetchone()
-    daily_return = (
-        nav_per_unit / previous["nav_per_unit"] - 1
-        if previous and previous["nav_per_unit"]
-        else None
-    )
+    if units:
+        nav_per_unit = net_nav / units
+        daily_return = (
+            nav_per_unit / previous["nav_per_unit"] - 1
+            if previous and previous["nav_per_unit"]
+            else None
+        )
+    else:
+        nav_per_unit = previous["nav_per_unit"] if previous else inception
+        daily_return = None
     leverage = float(get_setting(conn, "leverage", 1.0))
     borrow_rate = float(get_setting(conn, "borrow_rate", 0.05))
     levered_return = (
         leverage * daily_return - (leverage - 1) * borrow_rate / 252
-        if daily_return is not None
+        if units and daily_return is not None
         else None
     )
     flows_today = conn.execute(
