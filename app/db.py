@@ -111,6 +111,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         "perf_fee_pct": "20",
         "hwm_per_unit": "1000",
         "inception_nav_per_unit": "1000",
+        "snapshot_enabled": "1",
     }
     conn.executemany(
         "INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",

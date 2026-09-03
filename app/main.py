@@ -122,6 +122,7 @@ def settings_page(request: Request):
             ("fund_name", "Ledger"),
             ("leverage", "1.0"),
             ("borrow_rate", "0.05"),
+            ("snapshot_enabled", "1"),
         )
     }
     conn.close()
@@ -148,11 +149,13 @@ def save_settings(
     fund_name: str = Form("Ledger"),
     leverage: float = Form(1.0),
     borrow_rate: float = Form(0.05),
+    snapshot_enabled: str = Form("0"),
 ):
     conn = get_conn()
     set_setting(conn, "fund_name", fund_name.strip() or "Ledger")
     set_setting(conn, "leverage", min(5.0, max(1.0, leverage)))
     set_setting(conn, "borrow_rate", borrow_rate)
+    set_setting(conn, "snapshot_enabled", "1" if snapshot_enabled == "1" else "0")
     conn.close()
     return RedirectResponse("/settings", status_code=303)
 
