@@ -11,8 +11,8 @@
 </form>
 <form class="inline" method="post" action="/fees/lps"><input name="name" placeholder="New LP name" required><button>Add LP</button></form>
 <h2>Ownership</h2>
-<table><thead><tr><th>LP</th><th>Units</th><th>% of fund</th><th>Current value</th><th>Contributed</th><th>Withdrawn</th><th>P&amp;L</th></tr></thead><tbody>
-{% for lp in ownership.rows %}<tr><td class="person">{{ lp.name }}{% if lp.is_gp %} <small>GP</small>{% endif %}</td><td class="num">{{ lp.units|number(4) }}</td><td class="num">{{ (lp.percentage * 100)|number(2) }}%</td><td class="num">{{ lp.value|number }}</td><td class="num">{{ lp.contributed|number }}</td><td class="num">{{ lp.withdrawn|number }}</td><td class="num {{ 'negative' if lp.pnl < 0 }}">{{ lp.pnl|number }}</td></tr>{% else %}<tr><td colspan="7" class="empty">No LPs.</td></tr>{% endfor %}
+<table><thead><tr><th>LP</th><th class="num">Units</th><th class="num">% of fund</th><th class="num">Current value</th><th class="num">Contributed</th><th class="num">Withdrawn</th><th class="num">P&amp;L</th></tr></thead><tbody>
+{% for lp in ownership.rows %}<tr><td class="person">{{ lp.name }}{% if lp.is_gp and lp.name != "GP" %}<small> · GP</small>{% endif %}</td><td class="num">{{ lp.units|number(4) }}</td><td class="num">{{ (lp.percentage * 100)|number(2) }}%</td><td class="num">{{ lp.value|number }}</td><td class="num">{{ lp.contributed|number }}</td><td class="num">{{ lp.withdrawn|number }}</td><td class="num {{ 'negative' if lp.pnl < 0 }}">{{ lp.pnl|number }}</td></tr>{% else %}<tr><td colspan="7" class="empty">No LPs.</td></tr>{% endfor %}
 <tr class="total"><th>Total</th><th class="num">{{ ownership.total_units|number(4) }}</th><th class="num">100.00%</th><th class="num">{{ ownership.total_value|number }}</th><th></th><th></th><th></th></tr>
 </tbody></table>
 <h2>Accruals</h2>
@@ -21,7 +21,7 @@
   <div><label>Management fees accrued</label><strong>{{ mgmt_accrued|number }}</strong></div>
   <div><label>Performance fees crystallized</label><strong>{{ perf_accrued|number }}</strong></div>
 </section>
-<p class="actions"><form class="inline" method="post" action="/fees/crystallize"><button>Crystallize performance fee now</button></form><form class="inline" method="post" action="/fees/settle"><button>Pay fees to GP</button></form></p>
+<div class="actions"><form class="inline" method="post" action="/fees/crystallize"><button>Crystallize performance fee now</button></form><form class="inline" method="post" action="/fees/settle"><button>Pay fees to GP</button></form></div>
 <h2>Calculator</h2>
 <form class="form-grid calculator" method="get" action="/fees">
   <label>Starting NAV<input name="starting_nav" type="number" step=".01" value="{{ request.query_params.get('starting_nav', '') }}" required></label>

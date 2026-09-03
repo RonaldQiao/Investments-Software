@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -34,8 +35,9 @@ app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 @app.on_event("startup")
 async def startup():
     init_db()
-    await catch_up_async()
-    start_scheduler()
+    if os.environ.get("LEDGER_NO_SCHEDULER") != "1":
+        await catch_up_async()
+        start_scheduler()
 
 
 @app.on_event("shutdown")

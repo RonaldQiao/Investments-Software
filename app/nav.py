@@ -257,6 +257,8 @@ def history_series(conn):
             f"{(index / max(len(nav_units) - 1, 1)) * 1000:.1f},{150 - ((value - low) / span) * 140:.1f}"
             for index, value in enumerate(nav_units)
         ]
+        if len(chart_points) == 1:
+            chart_points.append(chart_points[0].replace("0.0,", "1000.0,", 1))
     else:
         low = high = 0
     chart_inception_y = (

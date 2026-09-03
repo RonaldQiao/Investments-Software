@@ -1,23 +1,121 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
+import random
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import holidays
+
 from app.db import get_conn, init_db
 from app.fees import record_cash_flow
+from app.nav import take_snapshot
 from app.pricing import refresh_prices
+from app.positions import build_positions
+
+NYSE_HOLIDAYS = holidays.financial_holidays("NYSE")
+
+
+def trading_days(count):
+    days = []
+    day = datetime.now(timezone.utc).date() - timedelta(days=1)
+    while len(days) < count:
+        if day.weekday() < 5 and day not in NYSE_HOLIDAYS:
+            days.append(day)
+        day -= timedelta(days=1)
+    return list(reversed(days))
+
+
+def backfill_history(conn, count):
+    if count <= 0:
+        return
+    trades = conn.execute(
+        "SELECT t.*, i.multiplier FROM trades t JOIN instruments i ON i.id=t.instrument_id "
+        "ORDER BY t.ts,t.id"
+    ).fetchall()
+    positions = build_positions(trades)
+    marks = {
+        instrument_id: position.avg_price
+        for instrument_id, position in positions.items()
+        if position.qty
+    }
+    instruments = {
+        row["id"]: row
+        for row in conn.execute("SELECT * FROM instruments").fetchall()
+    }
+    original_manual = {
+        instrument_id: row["manual_mark"]
+        for instrument_id, row in instruments.items()
+        if row["pricing_source"] == "manual"
+    }
+    rng = random.Random(1)
+    days = trading_days(count)
+    middle = count // 2
+    investor = conn.execute(
+        "SELECT id FROM lps WHERE name='Investor A'"
+    ).fetchone()["id"]
+    for index, day in enumerate(days):
+        for instrument_id, mark in list(marks.items()):
+            instrument = instruments[instrument_id]
+            if instrument["asset_class"] in {"equity", "etf"}:
+                sigma = 0.012
+            elif instrument["asset_class"] == "crypto":
+                sigma = 0.025
+            elif instrument["asset_class"] in {"bond", "commodity"}:
+                sigma = 0.008
+            elif instrument["asset_class"] == "option":
+                sigma = 0.03
+            else:
+                sigma = 0
+            marks[instrument_id] = mark * (1 + rng.gauss(0, sigma))
+            if instrument["pricing_source"] == "manual":
+                conn.execute(
+                    "UPDATE instruments SET manual_mark=?,manual_mark_at=? WHERE id=?",
+                    (marks[instrument_id], day.isoformat(), instrument_id),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO prices(instrument_id,price,ts,source) VALUES (?,?,?,?) "
+                    "ON CONFLICT(instrument_id) DO UPDATE SET price=excluded.price,"
+                    "ts=excluded.ts,source=excluded.source",
+                    (instrument_id, marks[instrument_id], day.isoformat(), "demo-history"),
+                )
+        conn.commit()
+        if index == middle:
+            record_cash_flow(
+                conn,
+                f"{day.isoformat()}T12:00:00",
+                250_000,
+                investor,
+                "Demo history contribution",
+            )
+        take_snapshot(conn, day, "scheduled", refresh=False)
+    for instrument_id, mark in original_manual.items():
+        conn.execute(
+            "UPDATE instruments SET manual_mark=?,manual_mark_at=? WHERE id=?",
+            (mark, datetime.now(timezone.utc).isoformat(), instrument_id),
+        )
+    conn.commit()
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--history", type=int, default=0)
+    args = parser.parse_args()
     init_db()
     conn = get_conn()
+    conn.execute("DELETE FROM fee_events")
+    conn.execute("DELETE FROM nav_snapshots")
+    conn.execute("DELETE FROM lp_units")
     conn.execute("DELETE FROM trades")
     conn.execute("DELETE FROM cash_flows")
     conn.execute("DELETE FROM prices")
     conn.execute("DELETE FROM instruments")
+    conn.execute("DELETE FROM settings WHERE key='fee_liability'")
+    conn.execute("UPDATE settings SET value='1000' WHERE key='hwm_per_unit'")
     conn.execute("INSERT OR IGNORE INTO lps(name,is_gp) VALUES ('Investor A',0)")
     conn.execute("INSERT OR IGNORE INTO lps(name,is_gp) VALUES ('GP',1)")
     conn.execute("UPDATE lps SET is_gp=0 WHERE name='Principal'")
@@ -71,6 +169,7 @@ def main():
             (ids[symbol], now, side, quantity, price),
         )
     conn.commit()
+    backfill_history(conn, args.history)
     failed = asyncio.run(refresh_prices(conn))
     conn.close()
     print(f"Seeded demo book. Failed price symbols: {', '.join(failed) or 'none'}")
