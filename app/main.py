@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -34,8 +35,9 @@ app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 @app.on_event("startup")
 async def startup():
     init_db()
-    await catch_up_async()
-    start_scheduler()
+    if os.environ.get("LEDGER_NO_SCHEDULER") != "1":
+        await catch_up_async()
+        start_scheduler()
 
 
 @app.on_event("shutdown")
@@ -243,11 +245,11 @@ def fees_context(conn, request: Request):
         try:
             calc = fee_scenario(
                 params["starting_nav"],
+                params.get("starting_nav_per_unit", 1000),
+                params.get("hwm_per_unit", params.get("hwm")),
                 params.get("gross_return_pct", params.get("gross_return", 0)),
-                params.get("mgmt_pct", params.get("mgmt", 0)),
-                params.get("perf_pct", params.get("perf", 0)),
-                params.get("hwm_per_unit", params.get("hwm", 1000)),
-                params.get("current_nav_per_unit", params.get("current_nav", 1000)),
+                params.get("mgmt_pct", params.get("mgmt", 2)),
+                params.get("perf_pct", params.get("perf", 20)),
             )
         except (TypeError, ValueError):
             calc = None

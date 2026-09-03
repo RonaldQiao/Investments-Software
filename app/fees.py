@@ -113,7 +113,8 @@ def crystallize_perf_fee(conn, ts):
         ]
     )
     gross_nav = float(compute_portfolio(conn)["nav"])
-    nav_per_unit = gross_nav / units if units else 0
+    liability = float(get_setting(conn, "fee_liability", 0) or 0)
+    nav_per_unit = (gross_nav - liability) / units if units else 0
     hwm = float(get_setting(conn, "hwm_per_unit", 1000) or 0)
     perf_pct = float(get_setting(conn, "perf_fee_pct", 20) or 0)
     fee = max(0.0, nav_per_unit - hwm) * units * perf_pct / 100
@@ -165,28 +166,36 @@ def settle_fees(conn, ts):
 
 def fee_scenario(
     starting_nav,
-    gross_return_pct,
-    mgmt_pct,
-    perf_pct,
-    hwm_per_unit,
-    current_nav_per_unit,
+    starting_nav_per_unit=1000,
+    hwm_per_unit=None,
+    gross_return_pct=0,
+    mgmt_pct=2,
+    perf_pct=20,
 ):
     starting_nav = float(starting_nav)
+    starting_nav_per_unit = float(starting_nav_per_unit)
+    hwm_per_unit = (
+        starting_nav_per_unit if hwm_per_unit is None else float(hwm_per_unit)
+    )
+    units = starting_nav / starting_nav_per_unit if starting_nav_per_unit else 0
     gross_pnl = starting_nav * float(gross_return_pct) / 100
     mgmt_fee = starting_nav * float(mgmt_pct) / 100
-    units = starting_nav / float(hwm_per_unit) if hwm_per_unit else 0
+    gross_end_npu = starting_nav_per_unit * (1 + float(gross_return_pct) / 100)
+    npu_after_mgmt = gross_end_npu - mgmt_fee / units if units else gross_end_npu
     perf_fee = (
-        max(0.0, float(current_nav_per_unit) - float(hwm_per_unit))
+        max(0.0, npu_after_mgmt - hwm_per_unit)
         * units
         * float(perf_pct)
         / 100
     )
-    net_to_lps = starting_nav + gross_pnl - mgmt_fee - perf_fee
+    net_end_npu = npu_after_mgmt - perf_fee / units if units else npu_after_mgmt
+    net_to_lps = net_end_npu * units
     return {
         "gross_pnl": gross_pnl,
         "mgmt_fee": mgmt_fee,
         "perf_fee": perf_fee,
+        "gp_take": mgmt_fee + perf_fee,
         "net_to_lps": net_to_lps,
         "net_return_pct": (net_to_lps / starting_nav - 1) * 100 if starting_nav else 0,
-        "gp_take": mgmt_fee + perf_fee,
+        "new_hwm": max(hwm_per_unit, net_end_npu),
     }

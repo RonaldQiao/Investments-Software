@@ -257,8 +257,13 @@ def history_series(conn):
             f"{(index / max(len(nav_units) - 1, 1)) * 1000:.1f},{150 - ((value - low) / span) * 140:.1f}"
             for index, value in enumerate(nav_units)
         ]
+        if len(chart_points) == 1:
+            chart_points.append(chart_points[0].replace("0.0,", "1000.0,", 1))
     else:
         low = high = 0
+    chart_inception_y = (
+        150 - ((1000 - low) / (high - low or 1)) * 140 if nav_units else 150
+    )
     return {
         "snapshots": rows,
         "summary": summary,
@@ -266,6 +271,7 @@ def history_series(conn):
         "chart_points": " ".join(chart_points),
         "chart_min": low,
         "chart_max": high,
+        "chart_inception_y": chart_inception_y,
     }
 
 

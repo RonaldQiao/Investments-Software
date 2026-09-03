@@ -98,16 +98,34 @@ def test_performance_fee_respects_high_water_mark():
     conn.execute("UPDATE instruments SET manual_mark=150")
     assert crystallize_perf_fee(conn, "2026-01-04") == 0
     conn.execute("UPDATE instruments SET manual_mark=250")
-    assert crystallize_perf_fee(conn, "2026-01-05") == pytest.approx(10_000)
+    assert crystallize_perf_fee(conn, "2026-01-05") == pytest.approx(6_000)
 
 
 def test_fee_scenario():
-    result = fee_scenario(1_000_000, 10, 2, 20, 1000, 1080)
-    assert result == {
-        "gross_pnl": 100_000,
-        "mgmt_fee": 20_000,
-        "perf_fee": 16_000,
-        "net_to_lps": 1_064_000,
-        "net_return_pct": pytest.approx(6.4),
-        "gp_take": 36_000,
-    }
+    result = fee_scenario(1_000_000, 1000, 1000, 10, 2, 20)
+    assert result["gross_pnl"] == pytest.approx(100_000)
+    assert result["mgmt_fee"] == pytest.approx(20_000)
+    assert result["perf_fee"] == pytest.approx(16_000)
+    assert result["net_to_lps"] == pytest.approx(1_064_000)
+    assert result["net_return_pct"] == pytest.approx(6.4)
+    assert result["gp_take"] == pytest.approx(36_000)
+    assert result["new_hwm"] == pytest.approx(1064)
+
+
+def test_performance_fee_uses_nav_net_of_management_liability():
+    conn, principal = database()
+    instrument = conn.execute(
+        "INSERT INTO instruments(symbol,name,asset_class,pricing_source,manual_mark) "
+        "VALUES ('TEST','Test','equity','manual',200)"
+    )
+    conn.execute(
+        "INSERT INTO trades(instrument_id,ts,side,quantity,price) "
+        "VALUES (?,'2026-01-01','BUY',1000,100)",
+        (instrument.lastrowid,),
+    )
+    record_cash_flow(conn, "2026-01-01", 1_000_000, principal, "capital")
+    take_snapshot(conn, date(2026, 1, 1), refresh=False)
+    mgmt_fee = 1_100_000 * 200 / 10000 / 252
+    take_snapshot(conn, date(2026, 1, 2), refresh=False)
+    expected = (1100 - mgmt_fee / 1000 - 1000) * 1000 * 0.2
+    assert crystallize_perf_fee(conn, "2026-01-02") == pytest.approx(expected)

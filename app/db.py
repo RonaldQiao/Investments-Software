@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
-DB_PATH = ROOT / "data" / "ledger.db"
+DB_PATH = Path(os.environ.get("LEDGER_DB", ROOT / "data" / "ledger.db"))
 
 
 def get_conn() -> sqlite3.Connection:

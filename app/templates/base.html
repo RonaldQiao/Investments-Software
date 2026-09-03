@@ -8,8 +8,8 @@
 </head>
 <body>
 <header><div class="nav"><a class="brand" href="/">{{ fund_name }}</a><nav>
-  <a href="/">Dashboard</a><a href="/positions">Positions</a><a href="/trades">Trades</a>
-  <a href="/capital">Capital</a><a href="/fees">Fees</a><a href="/history">History</a><a href="/settings">Settings</a>
+  <a class="{{ 'active' if request.url.path == '/' else '' }}" href="/">Dashboard</a><a class="{{ 'active' if request.url.path == '/positions' else '' }}" href="/positions">Positions</a><a class="{{ 'active' if request.url.path == '/trades' else '' }}" href="/trades">Trades</a>
+  <a class="{{ 'active' if request.url.path == '/capital' else '' }}" href="/capital">Capital</a><a class="{{ 'active' if request.url.path == '/fees' else '' }}" href="/fees">Fees</a><a class="{{ 'active' if request.url.path == '/history' else '' }}" href="/history">History</a><a class="{{ 'active' if request.url.path == '/settings' else '' }}" href="/settings">Settings</a>
 </nav></div></header>
 <main><div class="page-head"><h1>{{ title|default('Dashboard') }}</h1>{% block actions %}{% endblock %}</div>
 {% block content %}{% endblock %}
