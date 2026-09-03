@@ -172,6 +172,44 @@ def _snapshot_row(conn, snapshot_date):
     ).fetchone()
 
 
+def _resolve_mark(conn, instrument, previous_marks, failed_symbols, fallback_price):
+    keys = instrument.keys()
+    instrument_id = (
+        instrument["instrument_id"] if "instrument_id" in keys else instrument["id"]
+    )
+    pricing_source = instrument["pricing_source"]
+    quote_symbol = (
+        yahoo_symbol_for(instrument)
+        if {"yahoo_symbol", "underlying", "expiry", "option_type", "strike"} <= set(keys)
+        else instrument["symbol"]
+    )
+    failed = (
+        bool(instrument["price_failed"])
+        if "price_failed" in keys
+        else quote_symbol in failed_symbols
+    )
+    if pricing_source == "manual":
+        mark = (
+            instrument["mark"]
+            if "mark" in keys
+            else instrument["manual_mark"]
+        )
+        if mark is not None:
+            return float(mark), "manual"
+    else:
+        mark = instrument["mark"] if "mark" in keys else None
+        if mark is None:
+            price = conn.execute(
+                "SELECT price FROM prices WHERE instrument_id=?", (instrument_id,)
+            ).fetchone()
+            mark = price["price"] if price else None
+        if mark is not None and not failed:
+            return float(mark), "yahoo"
+    if instrument_id in previous_marks:
+        return float(previous_marks[instrument_id]), "snapshot"
+    return float(fallback_price), "fallback"
+
+
 def take_snapshot(
     conn,
     snapshot_date: date,
@@ -192,35 +230,22 @@ def take_snapshot(
             (snapshot_date.isoformat(),),
         ).fetchall():
         previous_marks.setdefault(row["instrument_id"], row["mark"])
+    try:
+        failed_symbols = set(json.loads(get_setting(conn, "last_refresh_failures", "[]") or "[]"))
+    except (TypeError, json.JSONDecodeError):
+        failed_symbols = set()
     mark_overrides = {}
     snapshot_mark_rows = []
     for position in live_portfolio["positions"]:
-        if position["pricing_source"] == "manual" and position["mark"] is not None:
-            mark_overrides[position["instrument_id"]] = position["mark"]
-            snapshot_mark_rows.append(
-                (position["instrument_id"], position["mark"], "manual")
-            )
-        elif not position["price_failed"] and position["mark"] is not None:
-            mark_overrides[position["instrument_id"]] = position["mark"]
-            snapshot_mark_rows.append(
-                (position["instrument_id"], position["mark"], "yahoo")
-            )
-        elif position["instrument_id"] in previous_marks:
-            mark_overrides[position["instrument_id"]] = previous_marks[
-                position["instrument_id"]
-            ]
-            snapshot_mark_rows.append(
-                (
-                    position["instrument_id"],
-                    previous_marks[position["instrument_id"]],
-                    "snapshot",
-                )
-            )
-        else:
-            mark_overrides[position["instrument_id"]] = position["avg_price"]
-            snapshot_mark_rows.append(
-                (position["instrument_id"], position["avg_price"], "fallback")
-            )
+        mark, mark_source = _resolve_mark(
+            conn,
+            position,
+            previous_marks,
+            failed_symbols,
+            position["avg_price"],
+        )
+        mark_overrides[position["instrument_id"]] = mark
+        snapshot_mark_rows.append((position["instrument_id"], mark, mark_source))
     marked_instruments = {instrument_id for instrument_id, _, _ in snapshot_mark_rows}
     traded_today = conn.execute(
         "SELECT DISTINCT instrument_id FROM trades WHERE substr(ts,1,10)=?",
@@ -236,27 +261,18 @@ def take_snapshot(
         ).fetchone()
         if not instrument:
             continue
-        mark = None
-        mark_source = "fallback"
-        if instrument["pricing_source"] == "manual" and instrument["manual_mark"] is not None:
-            mark = float(instrument["manual_mark"])
-            mark_source = "manual"
-        else:
-            price = conn.execute(
-                "SELECT price FROM prices WHERE instrument_id=?", (instrument_id,)
-            ).fetchone()
-            if price and yahoo_symbol_for(instrument) not in failed_symbols:
-                mark = float(price["price"])
-                mark_source = "yahoo"
-        if mark is None and instrument_id in previous_marks:
-            mark = float(previous_marks[instrument_id])
-            mark_source = "snapshot"
-        if mark is None:
-            trade = conn.execute(
-                "SELECT price FROM trades WHERE instrument_id=? ORDER BY ts DESC,id DESC LIMIT 1",
-                (instrument_id,),
-            ).fetchone()
-            mark = float(trade["price"]) if trade else 0.0
+        trade = conn.execute(
+            "SELECT price FROM trades WHERE instrument_id=? ORDER BY ts DESC,id DESC LIMIT 1",
+            (instrument_id,),
+        ).fetchone()
+        fallback_price = float(trade["price"]) if trade else 0.0
+        mark, mark_source = _resolve_mark(
+            conn,
+            instrument,
+            previous_marks,
+            failed_symbols,
+            fallback_price,
+        )
         snapshot_mark_rows.append((instrument_id, mark, mark_source))
     portfolio = compute_portfolio(conn, mark_overrides)
     gross_nav = float(portfolio["nav"])
