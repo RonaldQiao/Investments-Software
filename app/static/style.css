@@ -9,6 +9,13 @@ input[type=range],input[type=checkbox]{accent-color:#000}
 input[type=date]{-webkit-appearance:none;appearance:none}.blotter-label{display:block;margin-top:16px}
 main>.page-head+h2{border-top:0;padding-top:0}
 main>.page-head+.headline{border-top:0}
+main>.headline+h2{border-top:0;padding-top:0}
+h2+.headline{border-top:0}
+.legend{display:flex;gap:12px;margin:8px 0 16px}
+.legend-fund{color:#000}
+.legend-benchmark{color:#999}
+.day-date{color:#999;font:12px/1.25 "SFMono-Regular",Menlo,Monaco,Consolas,monospace;white-space:nowrap}
+.day-result{white-space:nowrap}
 th.num{text-align:right}
 .page-actions{gap:8px}
 .page-head .inline+.button{margin-left:0}

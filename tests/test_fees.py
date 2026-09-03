@@ -19,6 +19,7 @@ def database():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     init_db(conn)
+    set_setting(conn, "benchmark_symbol", "")
     principal = conn.execute(
         "SELECT id FROM lps WHERE name='Principal'"
     ).fetchone()["id"]

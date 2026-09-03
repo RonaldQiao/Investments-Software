@@ -91,6 +91,14 @@ def percent(value):
     return f"{'−' if value < 0 else '+'}{abs(value) * 100:.2f}%"
 
 
+def fee_bps(value):
+    return "—" if value is None or value == "—" else f"{float(value):.0f}"
+
+
+def fee_pct(value):
+    return "—" if value is None or value == "—" else f"{float(value):g}"
+
+
 def age(value):
     if value is None:
         return ""
@@ -115,6 +123,8 @@ def flash_redirect(path, key, message):
 
 templates.env.filters["number"] = number
 templates.env.filters["percent"] = percent
+templates.env.filters["fee_bps"] = fee_bps
+templates.env.filters["fee_pct"] = fee_pct
 templates.env.filters["age"] = age
 templates.env.filters["expiry_days"] = expiry_days
 
@@ -360,6 +370,7 @@ def settings_page(request: Request):
             ("leverage", "1.0"),
             ("borrow_rate", "0.05"),
             ("snapshot_enabled", "1"),
+            ("benchmark_symbol", "SPY"),
         )
     }
     job_logs = row_dicts(
@@ -740,12 +751,14 @@ def save_settings(
     leverage: float = Form(1.0),
     borrow_rate: float = Form(0.05),
     snapshot_enabled: str = Form("0"),
+    benchmark_symbol: str = Form("SPY"),
 ):
     conn = get_conn()
     set_setting(conn, "fund_name", fund_name.strip() or "Ledger")
     set_setting(conn, "leverage", min(5.0, max(1.0, leverage)))
     set_setting(conn, "borrow_rate", borrow_rate)
     set_setting(conn, "snapshot_enabled", "1" if snapshot_enabled == "1" else "0")
+    set_setting(conn, "benchmark_symbol", benchmark_symbol.strip().upper())
     conn.close()
     return RedirectResponse("/settings", status_code=303)
 

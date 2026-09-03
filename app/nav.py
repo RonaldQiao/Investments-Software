@@ -6,7 +6,9 @@ import io
 import json
 import math
 from datetime import UTC, date, datetime
+from itertools import pairwise
 
+from .benchmark import beta, pair_returns
 from .db import get_setting, set_setting
 from .positions import build_positions, cash_from_trades
 from .pricing import refresh_prices, yahoo_symbol_for
@@ -169,7 +171,11 @@ def _snapshot_row(conn, snapshot_date):
 
 
 def take_snapshot(
-    conn, snapshot_date: date, source: str = "manual", refresh: bool = False
+    conn,
+    snapshot_date: date,
+    source: str = "manual",
+    refresh: bool = False,
+    fetch_benchmark: bool = True,
 ) -> dict:
     existing = _snapshot_row(conn, snapshot_date)
     if refresh:
@@ -308,6 +314,21 @@ def take_snapshot(
         "INSERT INTO snapshot_marks(date,instrument_id,mark,source) VALUES (?,?,?,?)",
         [(values["date"], instrument_id, mark, mark_source) for instrument_id, mark, mark_source in snapshot_mark_rows],
     )
+    benchmark_symbol = str(get_setting(conn, "benchmark_symbol", "") or "").strip().upper()
+    if benchmark_symbol and fetch_benchmark:
+        from .pricing import fetch_benchmark_close
+
+        try:
+            benchmark_close = asyncio.run(
+                fetch_benchmark_close(benchmark_symbol, snapshot_date)
+            )
+        except (RuntimeError, OSError):
+            benchmark_close = None
+        conn.execute(
+            "INSERT INTO benchmark_closes(symbol,date,close) VALUES (?,?,?) "
+            "ON CONFLICT(symbol,date) DO UPDATE SET close=excluded.close",
+            (benchmark_symbol, values["date"], benchmark_close),
+        )
     conn.commit()
     return dict(conn.execute("SELECT * FROM nav_snapshots WHERE date=?", (values["date"],)).fetchone())
 
@@ -328,17 +349,54 @@ def _is_last_trading_day_of_year(snapshot_date):
 
 def history_series(conn):
     rows = [dict(row) for row in conn.execute("SELECT * FROM nav_snapshots ORDER BY date").fetchall()]
+    benchmark_symbol = str(get_setting(conn, "benchmark_symbol", "") or "").strip().upper()
+    benchmark_rows = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT date,close FROM benchmark_closes WHERE symbol=? ORDER BY date",
+            (benchmark_symbol,),
+        ).fetchall()
+    ] if benchmark_symbol else []
+    pairs = pair_returns(rows, benchmark_rows)
+    benchmark_closes = sorted(
+        (row["date"], float(row["close"]))
+        for row in benchmark_rows
+        if row["close"] is not None
+    )
+    benchmark_returns = {
+        current[0]: current[1] / previous[1] - 1
+        for previous, current in pairwise(benchmark_closes)
+        if previous[1]
+    }
+    paired = {
+        row["date"]: benchmark_returns[row["date"]]
+        for row in rows
+        if row["date"] in benchmark_returns and row["daily_return"] is not None
+    }
     cumulative = 1.0
     cumulative_levered = 1.0
+    benchmark_cumulative = 1.0
+    benchmark_values = []
     returns = []
+    return_days = []
     for row in rows:
         if row["daily_return"] is not None:
             cumulative *= 1 + row["daily_return"]
             returns.append(row["daily_return"])
+            return_days.append((row["date"], row["daily_return"]))
         if row["levered_return"] is not None:
             cumulative_levered *= 1 + row["levered_return"]
         row["cumulative_return"] = cumulative - 1 if returns else None
         row["cumulative_levered_return"] = cumulative_levered - 1 if row["levered_return"] is not None else None
+        row["benchmark_return"] = paired.get(row["date"])
+        row["excess_return"] = (
+            row["daily_return"] - row["benchmark_return"]
+            if row["daily_return"] is not None and row["benchmark_return"] is not None
+            else None
+        )
+        if row["benchmark_return"] is not None:
+            benchmark_cumulative *= 1 + row["benchmark_return"]
+        benchmark_values.append(benchmark_cumulative)
     nav_units = [row["nav_per_unit"] for row in rows if row["nav_per_unit"]]
     peaks = []
     peak = None
@@ -349,6 +407,7 @@ def history_series(conn):
     mean = sum(returns) / count if count else 0
     variance = sum((item - mean) ** 2 for item in returns) / (count - 1) if count > 1 else 0
     vol = math.sqrt(variance) * math.sqrt(252)
+    has_benchmark = bool(pairs)
     summary = {
         "inception_return": cumulative - 1 if returns else None,
         "annualized_return": (cumulative ** (252 / count) - 1) if count else None,
@@ -356,15 +415,33 @@ def history_series(conn):
         "sharpe": (mean / math.sqrt(variance) * math.sqrt(252)) if variance else None,
         "max_drawdown": min(peaks) if peaks else None,
         "best_day": max(returns) if returns else None,
+        "best_day_date": max(return_days, key=lambda item: item[1])[0] if returns else None,
         "worst_day": min(returns) if returns else None,
+        "worst_day_date": min(return_days, key=lambda item: item[1])[0] if returns else None,
+        "benchmark_return": benchmark_cumulative - 1 if has_benchmark else None,
+        "excess_return": (
+            cumulative - benchmark_cumulative if has_benchmark and returns else None
+        ),
+        "beta": beta(pairs) if len(pairs) >= 10 else None,
     }
     chart_points = []
+    benchmark_points = []
     if nav_units:
-        low, high = min(nav_units), max(nav_units)
+        normalized_benchmark = (
+            [nav_units[0] * value for value in benchmark_values]
+            if has_benchmark
+            else []
+        )
+        chart_values = nav_units + normalized_benchmark
+        low, high = min(chart_values), max(chart_values)
         span = high - low or 1
         chart_points = [
             f"{(index / max(len(nav_units) - 1, 1)) * 1000:.1f},{150 - ((value - low) / span) * 140:.1f}"
             for index, value in enumerate(nav_units)
+        ]
+        benchmark_points = [
+            f"{(index / max(len(normalized_benchmark) - 1, 1)) * 1000:.1f},{150 - ((value - low) / span) * 140:.1f}"
+            for index, value in enumerate(normalized_benchmark)
         ]
         if len(chart_points) == 1:
             chart_points.append(chart_points[0].replace("0.0,", "1000.0,", 1))
@@ -378,9 +455,12 @@ def history_series(conn):
         "summary": summary,
         "chart": nav_units,
         "chart_points": " ".join(chart_points),
+        "benchmark_points": " ".join(benchmark_points),
         "chart_min": low,
         "chart_max": high,
         "chart_inception_y": chart_inception_y,
+        "benchmark_values": benchmark_values,
+        "benchmark_symbol": benchmark_symbol,
     }
 
 
@@ -389,7 +469,8 @@ def history_csv(conn) -> str:
     output = io.StringIO()
     fields = [
         "date", "nav", "nav_per_unit", "daily_return", "levered_return",
-        "cumulative_return", "flows_today", "gross_long", "gross_short", "cash", "source",
+        "benchmark_return", "cumulative_return", "flows_today", "gross_long",
+        "gross_short", "cash", "source",
     ]
     writer = csv.DictWriter(output, fieldnames=fields)
     writer.writeheader()

@@ -68,6 +68,39 @@ async def fetch_yahoo(symbols: list[str]) -> dict[str, float | None]:
     return dict(results)
 
 
+async def fetch_benchmark_history(symbol: str, range_: str = "5d") -> dict[str, float | None]:
+    if not symbol:
+        return {}
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        async with httpx.AsyncClient(
+            headers=headers, timeout=10.0, follow_redirects=True
+        ) as client:
+            response = await client.get(
+                f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}",
+                params={"range": range_, "interval": "1d"},
+            )
+            response.raise_for_status()
+            result = response.json().get("chart", {}).get("result") or []
+            if not result:
+                return {}
+            timestamps = result[0].get("timestamp") or []
+            quote = (result[0].get("indicators", {}).get("quote") or [{}])[0]
+            closes = quote.get("close") or []
+            return {
+                datetime.fromtimestamp(timestamp, UTC).date().isoformat(): (
+                    float(close) if close is not None else None
+                )
+                for timestamp, close in zip(timestamps, closes)
+            }
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, OSError):
+        return {}
+
+
+async def fetch_benchmark_close(symbol: str, target_date: date) -> float | None:
+    return (await fetch_benchmark_history(symbol, "5d")).get(target_date.isoformat())
+
+
 async def refresh_prices(conn) -> list[str]:
     rows = conn.execute(
         "SELECT id,symbol,yahoo_symbol,asset_class,underlying,expiry,strike,option_type "
