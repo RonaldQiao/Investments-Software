@@ -7,6 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.db import get_conn, init_db
+from app.fees import record_cash_flow
 from app.pricing import refresh_prices
 
 
@@ -61,12 +62,9 @@ def main():
             "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) VALUES (?,?,?,?,?,0,'Demo seed')",
             (ids[symbol], now, side, quantity, price),
         )
-    lp_id = conn.execute("SELECT id FROM lps WHERE name='Principal'").fetchone()["id"]
-    conn.execute(
-        "INSERT INTO cash_flows(ts,amount,lp_id,note) VALUES (?,?,?,'Initial demo capital')",
-        (now, 1_000_000, lp_id),
-    )
     conn.commit()
+    lp_id = conn.execute("SELECT id FROM lps WHERE name='Principal'").fetchone()["id"]
+    record_cash_flow(conn, now, 1_000_000, lp_id, "Initial demo capital")
     failed = asyncio.run(refresh_prices(conn))
     conn.close()
     print(f"Seeded demo book. Failed price symbols: {', '.join(failed) or 'none'}")
