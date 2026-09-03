@@ -40,6 +40,23 @@ Use `make backup` (or `POST /backup` in Settings) to create a SQLite backup in
 `data/backups/`. Only the newest 20 backups are retained. GitHub Actions runs
 the test suite on every push and pull request.
 
+## Running unattended
+
+The snapshot CLI writes a snapshot through the same retry and job-log path as
+the scheduler:
+
+```sh
+python -m app.snapshot [--date YYYY-MM-DD] [--catch-up]
+```
+
+`--catch-up` is safe to run hourly: it is a no-op before 16:00 New York time
+and when today's trading-day snapshot already exists. To install the macOS
+launchd agents for the server and snapshot CLI, run `make install-agent`; remove
+them with `make uninstall-agent`. The snapshot agent runs at minute 5 of every
+local hour on weekdays because launchd uses the machine's local timezone. The
+CLI's New York time gate ensures that only the 16:05 ET-or-later invocation
+writes the daily snapshot.
+
 `make backfill-benchmark` downloads one year of benchmark closes for existing
 snapshot dates. Demo history seeding performs the same backfill when online and
 continues silently when Yahoo is unavailable.

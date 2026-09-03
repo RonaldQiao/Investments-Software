@@ -13,6 +13,8 @@ from .db import get_setting, set_setting
 from .positions import build_positions, cash_from_trades
 from .pricing import refresh_prices, yahoo_symbol_for
 
+_BENCHMARK_UNSET = object()
+
 
 def _price_age_seconds(ts, now):
     if not ts:
@@ -176,6 +178,7 @@ def take_snapshot(
     source: str = "manual",
     refresh: bool = False,
     fetch_benchmark: bool = True,
+    benchmark_close=_BENCHMARK_UNSET,
 ) -> dict:
     existing = _snapshot_row(conn, snapshot_date)
     if refresh:
@@ -316,14 +319,15 @@ def take_snapshot(
     )
     benchmark_symbol = str(get_setting(conn, "benchmark_symbol", "") or "").strip().upper()
     if benchmark_symbol and fetch_benchmark:
-        from .pricing import fetch_benchmark_close
+        if benchmark_close is _BENCHMARK_UNSET:
+            from .pricing import fetch_benchmark_close
 
-        try:
-            benchmark_close = asyncio.run(
-                fetch_benchmark_close(benchmark_symbol, snapshot_date)
-            )
-        except (RuntimeError, OSError):
-            benchmark_close = None
+            try:
+                benchmark_close = asyncio.run(
+                    fetch_benchmark_close(benchmark_symbol, snapshot_date)
+                )
+            except (RuntimeError, OSError):
+                benchmark_close = None
         conn.execute(
             "INSERT INTO benchmark_closes(symbol,date,close) VALUES (?,?,?) "
             "ON CONFLICT(symbol,date) DO UPDATE SET close=excluded.close",

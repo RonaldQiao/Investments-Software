@@ -99,6 +99,15 @@ def fee_pct(value):
     return "—" if value is None or value == "—" else f"{float(value):g}"
 
 
+def signed_number(value):
+    if value is None:
+        return "—"
+    value = float(value)
+    if round(value, 2) == 0:
+        return "0.00"
+    return f"{value:+.2f}"
+
+
 def age(value):
     if value is None:
         return ""
@@ -125,6 +134,7 @@ templates.env.filters["number"] = number
 templates.env.filters["percent"] = percent
 templates.env.filters["fee_bps"] = fee_bps
 templates.env.filters["fee_pct"] = fee_pct
+templates.env.filters["signed_number"] = signed_number
 templates.env.filters["age"] = age
 templates.env.filters["expiry_days"] = expiry_days
 
