@@ -29,7 +29,7 @@ def trading_days(count):
     return list(reversed(days))
 
 
-def backfill_history(conn, count):
+def backfill_history(conn, count, history_days=None):
     if count <= 0:
         return
     trades = conn.execute(
@@ -52,7 +52,7 @@ def backfill_history(conn, count):
         if row["pricing_source"] == "manual"
     }
     rng = random.Random(1)
-    days = trading_days(count)
+    days = history_days or trading_days(count)
     middle = count // 2
     investor = conn.execute(
         "SELECT id FROM lps WHERE name='Investor A'"
@@ -105,6 +105,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--history", type=int, default=0)
     args = parser.parse_args()
+    history_days = trading_days(args.history) if args.history else []
     init_db()
     conn = get_conn()
     conn.execute("DELETE FROM fee_events")
@@ -163,13 +164,16 @@ def main():
         ("AAPL 240117C200", "BUY", 10, 4.20),
         ("Private credit note", "BUY", 1, 100000),
     ]
+    trade_timestamp = (
+        f"{history_days[0].isoformat()}T12:00:00" if history_days else now
+    )
     for symbol, side, quantity, price in trades:
         conn.execute(
             "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) VALUES (?,?,?,?,?,0,'Demo seed')",
-            (ids[symbol], now, side, quantity, price),
+            (ids[symbol], trade_timestamp, side, quantity, price),
         )
     conn.commit()
-    backfill_history(conn, args.history)
+    backfill_history(conn, args.history, history_days)
     failed = asyncio.run(refresh_prices(conn))
     conn.close()
     print(f"Seeded demo book. Failed price symbols: {', '.join(failed) or 'none'}")

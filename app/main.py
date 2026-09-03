@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from .attribution import attribution
 from .db import get_conn, get_setting, init_db, set_setting
 from .fees import (
     crystallize_perf_fee,
@@ -185,6 +186,63 @@ def trades_csv():
     )
 
 
+def pnl_context(conn, days="30"):
+    latest = conn.execute(
+        "SELECT MAX(date) date FROM nav_snapshots"
+    ).fetchone()["date"]
+    if not latest:
+        return {"attribution": {"rows": [], "classes": [], "total": {"pnl": 0.0, "pct_period": 0.0}, "snapshots": []}, "days": days}
+    end_date = date.fromisoformat(latest)
+    if days == "all":
+        start_date = date.min
+    else:
+        try:
+            start_date = end_date.fromordinal(end_date.toordinal() - int(days))
+        except (TypeError, ValueError):
+            days = "30"
+            start_date = end_date.fromordinal(end_date.toordinal() - 30)
+    return {
+        "attribution": attribution(conn, start_date, end_date),
+        "days": days,
+        "start_date": start_date,
+        "end_date": end_date,
+    }
+
+
+@app.get("/pnl", response_class=HTMLResponse)
+def pnl_page(request: Request, days: str = "30"):
+    conn = get_conn()
+    data = pnl_context(conn, days)
+    conn.close()
+    return render(request, "pnl.html", **data)
+
+
+@app.get("/pnl.csv")
+def pnl_csv(days: str = "30"):
+    conn = get_conn()
+    data = pnl_context(conn, days)["attribution"]
+    conn.close()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["instrument", "class", "days_held", "pnl", "pct_period", "best_day", "worst_day"])
+    for row in data["rows"]:
+        writer.writerow(
+            [
+                row["symbol"],
+                row["asset_class"],
+                row["days_held"],
+                row["pnl"],
+                row["pct_period"],
+                row["best_day"]["pnl"] if row["best_day"] else "",
+                row["worst_day"]["pnl"] if row["worst_day"] else "",
+            ]
+        )
+    writer.writerow(["Total", "", "", data["total"]["pnl"], data["total"]["pct_period"], "", ""])
+    return Response(
+        output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=pnl.csv"},
+    )
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request):
     conn = get_conn()
@@ -197,8 +255,44 @@ def settings_page(request: Request):
             ("snapshot_enabled", "1"),
         )
     }
+    job_logs = row_dicts(
+        conn.execute(
+            "SELECT ts,job,status,detail FROM job_log ORDER BY id DESC LIMIT 10"
+        )
+    )
     conn.close()
-    return render(request, "settings.html", settings=settings)
+    return render(request, "settings.html", settings=settings, job_logs=job_logs)
+
+
+def backup_database():
+    source = get_conn()
+    database_file = source.execute("PRAGMA database_list").fetchone()["file"]
+    backup_dir = Path(
+        os.environ.get("LEDGER_BACKUP_DIR", str(Path(database_file).parent / "backups"))
+    )
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"ledger-{datetime.now(ZoneInfo('America/New_York')).strftime('%Y%m%d-%H%M%S')}.db"
+    target_path = backup_dir / filename
+    target = sqlite3.connect(target_path)
+    try:
+        source.backup(target)
+        target.commit()
+    finally:
+        target.close()
+        source.close()
+    backups = sorted(backup_dir.glob("ledger-*.db"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for old in backups[20:]:
+        old.unlink()
+    return filename
+
+
+@app.post("/backup")
+def create_backup():
+    try:
+        filename = backup_database()
+    except sqlite3.Error as exc:
+        return flash_redirect("/settings", "error", f"Backup failed: {exc}")
+    return flash_redirect("/settings", "ok", f"Backup created: {filename}")
 
 
 def capital_context(conn):
@@ -230,7 +324,7 @@ def capital_context(conn):
         conn.execute("SELECT COALESCE(SUM(units),0) FROM lp_units").fetchone()[0]
     )
     totals["nav_per_unit"] = ownership(conn)["nav_per_unit"]
-    return {"flows": flows, "lps": lps, "totals": totals}
+    return {"flows": flows, "lps": lps, "lp_ownership": ownership(conn)["rows"], "totals": totals}
 
 
 @app.get("/capital", response_class=HTMLResponse)
@@ -244,6 +338,62 @@ def capital_page(request: Request, error: str | None = None):
         error=error,
         today=datetime.now(ZoneInfo("America/New_York")).date().isoformat(),
         **data,
+    )
+
+
+def lp_statement_context(conn, lp_id: int):
+    lp = conn.execute("SELECT * FROM lps WHERE id=?", (lp_id,)).fetchone()
+    if not lp:
+        return None
+    owner = next((row for row in ownership(conn)["rows"] if row["id"] == lp_id), None)
+    latest = conn.execute("SELECT MAX(date) date FROM nav_snapshots").fetchone()["date"]
+    flows = row_dicts(
+        conn.execute(
+            "SELECT ts,amount,note FROM cash_flows WHERE lp_id=? ORDER BY ts DESC,id DESC",
+            (lp_id,),
+        )
+    )
+    net = owner["contributed"] - owner["withdrawn"]
+    return {
+        "lp": dict(lp),
+        "as_of": latest or datetime.now(ZoneInfo("America/New_York")).date().isoformat(),
+        "owner": owner,
+        "flows": flows,
+        "net_contributions": net,
+        "simple_return": owner["value"] / net - 1 if net else None,
+    }
+
+
+@app.get("/lps/{lp_id}/statement", response_class=HTMLResponse)
+def lp_statement(request: Request, lp_id: int):
+    conn = get_conn()
+    data = lp_statement_context(conn, lp_id)
+    conn.close()
+    if not data:
+        return flash_redirect("/capital", "error", "LP not found")
+    return render(request, "statement.html", **data)
+
+
+@app.get("/lps/{lp_id}/statement.csv")
+def lp_statement_csv(lp_id: int):
+    conn = get_conn()
+    data = lp_statement_context(conn, lp_id)
+    conn.close()
+    if not data:
+        return Response("LP not found\n", status_code=404, media_type="text/plain")
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["LP", "As of", "Units", "NAV/unit", "Value", "% ownership", "Contributed", "Withdrawn", "Net contributions", "Simple return"])
+    owner = data["owner"]
+    writer.writerow([data["lp"]["name"], data["as_of"], owner["units"], owner["value"] / owner["units"] if owner["units"] else 0, owner["value"], owner["percentage"], owner["contributed"], owner["withdrawn"], data["net_contributions"], data["simple_return"] if data["simple_return"] is not None else ""])
+    writer.writerow([])
+    writer.writerow(["Date", "Amount", "Note"])
+    for flow in data["flows"]:
+        writer.writerow([flow["ts"], flow["amount"], flow["note"] or ""])
+    return Response(
+        output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={data['lp']['name']}-statement.csv"},
     )
 
 
