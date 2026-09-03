@@ -117,6 +117,16 @@ def test_import_route_parses_csv_and_backfills_weekend(tmp_path, monkeypatch):
     ]
     series = history_series(conn)
     assert series["summary"]["benchmark_return"] == pytest.approx(4328.82 / 3900.12 - 1)
+    empty = database()
+    set_setting(empty, "benchmark_symbol", "SPY")
+    empty.execute(
+        "INSERT INTO benchmark_closes(symbol,date,close) VALUES ('SPY','2022-06-27',3900.12)"
+    )
+    empty.execute(
+        "INSERT INTO benchmark_closes(symbol,date,close) VALUES ('SPY','2022-06-28',3901.12)"
+    )
+    empty.commit()
+    assert history_series(empty)["summary"]["benchmark_return"] is None
 
 
 def test_first_live_snapshot_after_import_skips_fees(tmp_path, monkeypatch):

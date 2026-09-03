@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -29,9 +30,10 @@ app.mount("/static", StaticFiles(directory=os.path.join(ROOT, "static")), name="
 
 @app.middleware("http")
 async def select_fund(request, call_next):
-    slugs = {fund["slug"] for fund in list_funds()}
-    slug = request.cookies.get("fund")
-    if slug not in slugs:
+    slug = request.cookies.get("fund", DEFAULT_FUND)
+    if slug != DEFAULT_FUND and (
+        not re.fullmatch(r"[a-z0-9-]+", slug) or not fund_path(slug).exists()
+    ):
         slug = DEFAULT_FUND
     token = ACTIVE_DB.set(fund_path(slug))
     try:

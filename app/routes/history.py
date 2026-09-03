@@ -61,7 +61,7 @@ async def import_history(file: UploadFile):
         ).strip().upper()
         message = (
             f"Imported {result['imported']} points {result['first']} → {result['last']}; "
-            f"{symbol or 'benchmark'} closes: {closes}"
+            f"{symbol or 'benchmark'} closes: {closes}; {result['continuity']}"
         )
         return flash_redirect("/history", "ok", message)
     except (UnicodeDecodeError, ValueError, csv.Error, TypeError, AttributeError) as exc:

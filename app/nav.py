@@ -472,7 +472,7 @@ def history_series(conn):
         else 0
     )
     vol = math.sqrt(variance) * math.sqrt(252)
-    has_benchmark = bool(benchmark_returns)
+    has_benchmark = bool(paired)
     elapsed_days = (
         (date.fromisoformat(rows[-1]["date"]) - date.fromisoformat(rows[0]["date"])).days
         if len(rows) > 1
