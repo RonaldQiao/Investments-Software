@@ -1,3 +1,5 @@
+.flash{margin:8px 0 0;font:12px/1.25 "SFMono-Regular",Menlo,Monaco,Consolas,monospace}.flash .error{color:#e04545}.flash .ok{color:#666}.price-meta{color:#999!important;font:12px/1.25 "SFMono-Regular",Menlo,Monaco,Consolas,monospace!important;letter-spacing:.02em!important}.edit-form{flex-wrap:wrap;max-width:460px}
+.actions-cell details+details:before{content:"·";color:#999;margin-right:8px}
 input[type=range],input[type=checkbox]{accent-color:#000}
  .page-actions{display:flex;gap:12px;align-items:center}
 main>.page-head+h2{border-top:0;padding-top:0}

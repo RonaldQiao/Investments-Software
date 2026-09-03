@@ -89,6 +89,13 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
           mgmt_fee_accrued REAL NOT NULL DEFAULT 0,
           source TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS snapshot_marks (
+          date TEXT NOT NULL REFERENCES nav_snapshots(date) ON DELETE CASCADE,
+          instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+          mark REAL NOT NULL,
+          source TEXT NOT NULL,
+          PRIMARY KEY (date, instrument_id)
+        );
         CREATE TABLE IF NOT EXISTS fee_events (
           id INTEGER PRIMARY KEY,
           ts TEXT NOT NULL,
@@ -113,6 +120,8 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         "hwm_per_unit": "1000",
         "inception_nav_per_unit": "1000",
         "snapshot_enabled": "1",
+        "last_refresh_failures": "[]",
+        "last_refresh_at": "",
     }
     conn.executemany(
         "INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",

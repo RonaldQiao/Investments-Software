@@ -1,5 +1,5 @@
 {% extends "base.html" %}{% set title="Dashboard" %}
-{% block actions %}<form class="inline" method="post" action="/api/prices/refresh" onsubmit="return refreshPrices(event)"><button>Refresh prices</button></form>{% endblock %}
+{% block actions %}<form class="inline" method="post" action="/prices/refresh"><button>Refresh prices</button></form>{% endblock %}
 {% block content %}
 <section class="headline">
   <div><label>NAV (net)</label><strong>{{ portfolio.net_nav|number }}</strong></div>
@@ -13,6 +13,10 @@
 {% if portfolio.fee_liability %}<p class="meta">Gross NAV {{ portfolio.gross_nav|number }} · Fees accrued {{ portfolio.fee_liability|number }}</p>{% endif %}
 <p class="meta">Last price refresh: {{ latest_refresh or "Never" }}</p>
 <p class="meta">Last snapshot {% if latest_snapshot %}{{ latest_snapshot.date }} · NAV/unit {{ latest_snapshot.nav_per_unit|number }}{% if latest_snapshot.daily_return is not none %} · {{ latest_snapshot.daily_return|percent }}{% endif %}{% else %}Never{% endif %}</p>
+<p class="meta">Next scheduled snapshot: {{ next_snapshot }}</p>
+<h2>Exposure by class</h2>
+<table><thead><tr><th>Class</th><th class="num">Long</th><th class="num">Short</th><th class="num">Net</th><th class="num">Gross</th><th class="num">% of NAV</th><th class="num">Unrealized</th></tr></thead><tbody>
+{% for row in exposure %}<tr{% if row.class == "Total" %} class="total"{% endif %}><td>{{ row.class }}</td><td class="num">{{ row.long|number }}</td><td class="num">{{ row.short|number }}</td><td class="num">{{ row.net|number }}</td><td class="num">{{ row.gross|number }}</td><td class="num">{{ (row.pct_nav * 100)|number(2) }}%</td><td class="num {{ 'negative' if row.unrealized < 0 }}">{{ row.unrealized|number }}</td></tr>{% endfor %}</tbody></table>
 <table><thead><tr><th>Instrument</th><th>Side</th><th class="num">Qty</th><th class="num">Avg</th><th class="num">Mark</th><th class="num">Market value</th><th class="num">Unrealized</th></tr></thead>
-<tbody>{% for p in portfolio.positions %}<tr><td class="instrument-name"><a href="/positions">{{ p.symbol }}</a><small>{{ p.name }}</small></td><td>{{ p.side }}</td><td class="num">{{ p.qty|number(4) }}</td><td class="num">{{ p.avg_price|number }}</td><td class="num">{{ p.mark|number }}</td><td class="num {{ 'negative' if p.market_value < 0 }}">{{ p.market_value|number }}</td><td class="num {{ 'negative' if p.unrealized < 0 }}">{{ p.unrealized|number }}</td></tr>{% else %}<tr><td colspan="7" class="empty">No positions.</td></tr>{% endfor %}</tbody></table>
+<tbody>{% for p in portfolio.positions %}<tr><td class="instrument-name"><a href="/positions">{{ p.symbol }}</a><small>{{ p.name }}</small></td><td>{{ p.side }}</td><td class="num">{{ p.qty|number(4) }}</td><td class="num">{{ p.avg_price|number }}</td><td class="num">{% if p.price_failed or p.mark is none %}—<small class="price-meta">no price</small>{% else %}{{ p.mark|number }}{% if p.pricing_source == "manual" %}<small class="price-meta">manual · {{ p.manual_mark_at[:10] if p.manual_mark_at else "—" }}</small>{% elif p.price_age_seconds > 86400 %}<small class="price-meta">{{ p.price_age_seconds|age }}</small>{% endif %}{% endif %}</td><td class="num {{ 'negative' if p.market_value < 0 }}">{{ p.market_value|number }}</td><td class="num {{ 'negative' if p.unrealized < 0 }}">{{ p.unrealized|number }}</td></tr>{% else %}<tr><td colspan="7" class="empty">No positions.</td></tr>{% endfor %}</tbody></table>
 {% endblock %}

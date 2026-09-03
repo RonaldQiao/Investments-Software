@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import holidays
@@ -61,3 +61,17 @@ def start():
 def stop():
     if scheduler.running:
         scheduler.shutdown(wait=False)
+
+
+def next_snapshot_label(conn):
+    if str(get_setting(conn, "snapshot_enabled", "1")) != "1":
+        return "disabled"
+    job = scheduler.get_job("eod-nav")
+    if job and job.next_run_time:
+        return job.next_run_time.astimezone(NY).strftime("%a %Y-%m-%d %H:%M ET")
+    moment = datetime.now(NY).replace(hour=16, minute=0, second=0, microsecond=0)
+    if moment <= datetime.now(NY) or not is_trading_day(moment.date()):
+        moment += timedelta(days=1)
+        while not is_trading_day(moment.date()):
+            moment += timedelta(days=1)
+    return moment.strftime("%a %Y-%m-%d %H:%M ET")
