@@ -35,7 +35,11 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
           yahoo_symbol TEXT,
           manual_mark REAL,
           manual_mark_at TEXT,
-          notes TEXT
+          notes TEXT,
+          underlying TEXT,
+          expiry TEXT,
+          strike REAL,
+          option_type TEXT CHECK(option_type IN ('C','P'))
         );
         CREATE TABLE IF NOT EXISTS trades (
           id INTEGER PRIMARY KEY,
@@ -118,6 +122,17 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         );
         """
     )
+    existing_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(instruments)").fetchall()
+    }
+    for name, definition in (
+        ("underlying", "TEXT"),
+        ("expiry", "TEXT"),
+        ("strike", "REAL"),
+        ("option_type", "TEXT CHECK(option_type IN ('C','P'))"),
+    ):
+        if name not in existing_columns:
+            conn.execute(f"ALTER TABLE instruments ADD COLUMN {name} {definition}")
     defaults = {
         "leverage": "1.0",
         "borrow_rate": "0.05",

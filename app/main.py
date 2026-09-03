@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .attribution import attribution
+from .blotter import parse_blotter
 from .db import get_conn, get_setting, init_db, set_setting
 from .fees import (
     crystallize_perf_fee,
@@ -97,6 +98,15 @@ def age(value):
     return f"{max(1, seconds // 3600)}h"
 
 
+def expiry_days(value):
+    if not value:
+        return None
+    try:
+        return (date.fromisoformat(str(value)) - datetime.now(ZoneInfo("America/New_York")).date()).days
+    except ValueError:
+        return None
+
+
 def flash_redirect(path, key, message):
     return RedirectResponse(f"{path}?{key}={quote(str(message))}", status_code=303)
 
@@ -104,6 +114,7 @@ def flash_redirect(path, key, message):
 templates.env.filters["number"] = number
 templates.env.filters["percent"] = percent
 templates.env.filters["age"] = age
+templates.env.filters["expiry_days"] = expiry_days
 
 
 def render(request: Request, name: str, status_code: int = 200, **kwargs):
@@ -148,6 +159,100 @@ def positions_page(request: Request):
     conn.close()
     by_id = {item["instrument_id"]: item for item in portfolio["positions"]}
     return render(request, "positions.html", instruments=instruments, positions=by_id)
+
+
+@app.get("/update", response_class=HTMLResponse)
+def update_page(request: Request):
+    conn = get_conn()
+    portfolio = compute_portfolio(conn)
+    instruments = {
+        row["id"]: dict(row)
+        for row in conn.execute("SELECT * FROM instruments").fetchall()
+    }
+    conn.close()
+    positions = []
+    for position in portfolio["positions"]:
+        item = dict(position)
+        item.update(instruments[position["instrument_id"]])
+        positions.append(item)
+    return render(request, "update.html", positions=positions)
+
+
+@app.post("/update/marks")
+async def update_marks(request: Request):
+    form = await request.form()
+    conn = get_conn()
+    try:
+        conn.execute("BEGIN")
+        changed = 0
+        for key, value in form.items():
+            if not key.startswith("mark_") or key.startswith("mark_date_"):
+                continue
+            instrument_id = int(key[5:])
+            instrument = conn.execute(
+                "SELECT pricing_source FROM instruments WHERE id=?", (instrument_id,)
+            ).fetchone()
+            if not instrument or instrument["pricing_source"] != "manual":
+                continue
+            mark = float(value)
+            mark_date = str(form.get(f"mark_date_{instrument_id}") or "").strip()
+            timestamp = (
+                f"{mark_date}T12:00:00" if mark_date else datetime.now(timezone.utc).isoformat()
+            )
+            conn.execute(
+                "UPDATE instruments SET manual_mark=?,manual_mark_at=? WHERE id=?",
+                (mark, timestamp, instrument_id),
+            )
+            changed += 1
+        conn.commit()
+    except (TypeError, ValueError, sqlite3.Error) as exc:
+        conn.rollback()
+        conn.close()
+        return flash_redirect("/update", "error", f"Invalid mark: {exc}")
+    conn.close()
+    return flash_redirect("/update", "ok", f"Updated {changed} manual marks")
+
+
+@app.post("/update/blotter")
+async def update_blotter(request: Request):
+    form = await request.form()
+    conn = get_conn()
+    try:
+        pending = parse_blotter(str(form.get("blotter") or ""))
+        instruments = {
+            row["symbol"]: row["id"]
+            for row in conn.execute("SELECT symbol,id FROM instruments").fetchall()
+        }
+        for trade in pending:
+            if trade["symbol"] not in instruments:
+                raise ValueError(
+                    f"Unknown symbol on line {trade['line']}: {trade['symbol']}"
+                )
+        timestamp = datetime.now(timezone.utc).isoformat()
+        conn.execute("BEGIN")
+        conn.executemany(
+            "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) "
+            "VALUES (?,?,?,?,?,?,?)",
+            [
+                (
+                    instruments[trade["symbol"]],
+                    timestamp,
+                    trade["side"],
+                    trade["quantity"],
+                    trade["price"],
+                    trade["fees"],
+                    "Daily update blotter",
+                )
+                for trade in pending
+            ],
+        )
+        conn.commit()
+    except (ValueError, TypeError, sqlite3.Error) as exc:
+        conn.rollback()
+        conn.close()
+        return flash_redirect("/update", "error", str(exc))
+    conn.close()
+    return flash_redirect("/update", "ok", f"Recorded {len(pending)} trades")
 
 
 @app.get("/trades", response_class=HTMLResponse)
@@ -569,12 +674,17 @@ def add_instrument(
     yahoo_symbol: str = Form(""),
     manual_mark: str = Form(""),
     notes: str = Form(""),
+    underlying: str = Form(""),
+    expiry: str = Form(""),
+    strike: str = Form(""),
+    option_type: str = Form(""),
 ):
     conn = get_conn()
     try:
         conn.execute(
             "INSERT INTO instruments(symbol,name,asset_class,currency,multiplier,pricing_source,"
-            "yahoo_symbol,manual_mark,notes) VALUES (?,?,?,?,?,?,?,?,?)",
+            "yahoo_symbol,manual_mark,notes,underlying,expiry,strike,option_type) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 symbol.strip().upper(),
                 name.strip(),
@@ -585,6 +695,10 @@ def add_instrument(
                 yahoo_symbol.strip() or None,
                 float(manual_mark) if manual_mark.strip() else None,
                 notes.strip(),
+                underlying.strip() or None,
+                expiry.strip() or None,
+                float(strike) if strike.strip() else None,
+                option_type.strip().upper() or None,
             ),
         )
         conn.commit()
@@ -604,6 +718,10 @@ def edit_instrument(
     pricing_source: str = Form(...),
     yahoo_symbol: str = Form(""),
     notes: str = Form(""),
+    underlying: str = Form(""),
+    expiry: str = Form(""),
+    strike: str = Form(""),
+    option_type: str = Form(""),
 ):
     conn = get_conn()
     instrument = conn.execute(
@@ -619,7 +737,7 @@ def edit_instrument(
     ).fetchone()[0]
     conn.execute(
         "UPDATE instruments SET name=?,asset_class=?,multiplier=?,pricing_source=?,"
-        "yahoo_symbol=?,notes=? WHERE id=?",
+        "yahoo_symbol=?,notes=?,underlying=?,expiry=?,strike=?,option_type=? WHERE id=?",
         (
             name.strip(),
             asset_class,
@@ -627,6 +745,10 @@ def edit_instrument(
             pricing_source,
             yahoo_symbol.strip() or None,
             notes.strip(),
+            underlying.strip() or None,
+            expiry.strip() or None,
+            float(strike) if strike.strip() else None,
+            option_type.strip().upper() or None,
             instrument_id,
         ),
     )
@@ -774,7 +896,7 @@ def delete_trade(trade_id: int):
 
 
 @app.post("/prices/refresh")
-async def prices_refresh_page():
+async def prices_refresh_page(return_to: str = Form("/")):
     conn = get_conn()
     total = conn.execute(
         "SELECT COUNT(*) FROM instruments WHERE pricing_source='yahoo'"
@@ -783,23 +905,21 @@ async def prices_refresh_page():
     conn.close()
     if failed:
         return flash_redirect(
-            "/",
+            return_to,
             "error",
             f"Refreshed {total - len(failed)} prices, {len(failed)} failed: {', '.join(failed)}",
         )
-    return flash_redirect("/", "ok", f"Refreshed {total} prices, 0 failed")
+    return flash_redirect(return_to, "ok", f"Refreshed {total} prices, 0 failed")
 
 
 @app.post("/snapshots/now")
-async def snapshot_now():
+async def snapshot_now(return_to: str = Form("/history")):
     conn = get_conn()
     await refresh_prices(conn)
     today_ny = datetime.now(ZoneInfo("America/New_York")).date()
     take_snapshot(conn, today_ny, "manual", refresh=False)
     conn.close()
-    return flash_redirect(
-        "/history", "ok", f"Snapshot written for {today_ny.isoformat()}"
-    )
+    return flash_redirect(return_to, "ok", f"Snapshot written for {today_ny.isoformat()}")
 
 
 @app.post("/snapshots/{snapshot_date}/delete")
@@ -870,10 +990,15 @@ async def instruments_create_api(request: Request):
         payload.get("yahoo_symbol") or None,
         payload.get("manual_mark"),
         payload.get("notes", ""),
+        payload.get("underlying") or None,
+        payload.get("expiry") or None,
+        payload.get("strike"),
+        payload.get("option_type") or None,
     )
     cursor = conn.execute(
         "INSERT INTO instruments(symbol,name,asset_class,currency,multiplier,pricing_source,"
-        "yahoo_symbol,manual_mark,notes) VALUES (?,?,?,?,?,?,?,?,?)",
+        "yahoo_symbol,manual_mark,notes,underlying,expiry,strike,option_type) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         fields,
     )
     conn.commit()
@@ -908,6 +1033,10 @@ async def instruments_update_api(instrument_id: int, request: Request):
             "manual_mark",
             "manual_mark_at",
             "notes",
+            "underlying",
+            "expiry",
+            "strike",
+            "option_type",
         )
         if key in payload
     }

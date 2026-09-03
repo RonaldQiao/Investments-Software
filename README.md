@@ -27,6 +27,13 @@ asset class, with a CSV export. Capital rows link to LP statements showing
 units, value, flows, and simple return on net contributions. Money-weighted
 return is intentionally out of scope.
 
+The Update page (`/update`) is the daily workflow: review marks, enter a
+one-line-per-trade blotter, refresh prices, and write a snapshot. Blotter lines
+use `BUY 100 AAPL @ 189.5` or `SELL 2 ES=F @ 5400 fee 4.5`; `SHORT` is an alias
+for `SELL` and `COVER` is an alias for `BUY`. Contract instruments may include
+an underlying, expiry, strike, and call/put type. Yahoo options without an
+explicit symbol use OCC symbols such as `AAPL261218C00200000`.
+
 Use `make backup` (or `POST /backup` in Settings) to create a SQLite backup in
 `data/backups/`. Only the newest 20 backups are retained. GitHub Actions runs
 the test suite on every push and pull request.
