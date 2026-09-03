@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .db import get_conn, get_setting, init_db, set_setting
-from .nav import compute_portfolio
+from .nav import compute_portfolio, history_csv, history_series, take_snapshot
 from .pricing import refresh_prices
 from .positions import build_positions
+from .scheduler import catch_up_async, start as start_scheduler, stop as stop_scheduler
 
 ROOT = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=ROOT / "templates")
@@ -22,8 +24,15 @@ app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 
 @app.on_event("startup")
-def startup():
+async def startup():
     init_db()
+    await catch_up_async()
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+def shutdown():
+    stop_scheduler()
 
 
 def context(request: Request, **kwargs):
@@ -40,10 +49,18 @@ def row_dicts(rows):
 def number(value, decimals=2):
     value = float(value or 0)
     sign = "−" if value < 0 else ""
-    return f"{sign}{abs(value):.{decimals}f}"
+    return f"{sign}{abs(value):,.{decimals}f}"
+
+
+def percent(value):
+    if value is None:
+        return "—"
+    value = float(value)
+    return f"{'−' if value < 0 else '+'}{abs(value) * 100:.2f}%"
 
 
 templates.env.filters["number"] = number
+templates.env.filters["percent"] = percent
 
 
 def render(request: Request, name: str, **kwargs):
@@ -57,8 +74,19 @@ def dashboard(request: Request):
     conn = get_conn()
     portfolio = compute_portfolio(conn)
     latest = conn.execute("SELECT MAX(ts) ts FROM prices").fetchone()["ts"]
+    fee_liability = float(get_setting(conn, "fee_liability", 0) or 0)
+    snapshot = conn.execute(
+        "SELECT date,nav_per_unit,daily_return FROM nav_snapshots ORDER BY date DESC LIMIT 1"
+    ).fetchone()
     conn.close()
-    return render(request, "dashboard.html", portfolio=portfolio, latest_refresh=latest)
+    portfolio["fees_accrued"] = fee_liability
+    return render(
+        request,
+        "dashboard.html",
+        portfolio=portfolio,
+        latest_refresh=latest,
+        latest_snapshot=snapshot,
+    )
 
 
 @app.get("/positions", response_class=HTMLResponse)
@@ -102,10 +130,17 @@ def settings_page(request: Request):
 
 @app.get("/capital", response_class=HTMLResponse)
 @app.get("/fees", response_class=HTMLResponse)
-@app.get("/history", response_class=HTMLResponse)
 def placeholder_page(request: Request):
     section = request.url.path.strip("/").title()
     return render(request, "placeholder.html", section=section)
+
+
+@app.get("/history", response_class=HTMLResponse)
+def history_page(request: Request):
+    conn = get_conn()
+    series = history_series(conn)
+    conn.close()
+    return render(request, "history.html", **series)
 
 
 @app.post("/settings")
@@ -243,12 +278,51 @@ def delete_trade(trade_id: int):
     return RedirectResponse("/trades", status_code=303)
 
 
+@app.post("/snapshots/now")
+async def snapshot_now():
+    conn = get_conn()
+    await refresh_prices(conn)
+    today_ny = datetime.now(ZoneInfo("America/New_York")).date()
+    take_snapshot(conn, today_ny, "manual", refresh=False)
+    conn.close()
+    return RedirectResponse("/history", status_code=303)
+
+
+@app.post("/snapshots/{snapshot_date}/delete")
+def delete_snapshot(snapshot_date: str):
+    conn = get_conn()
+    conn.execute("DELETE FROM nav_snapshots WHERE date=?", (snapshot_date,))
+    conn.commit()
+    conn.close()
+    return RedirectResponse("/history", status_code=303)
+
+
 @app.get("/api/portfolio")
 def portfolio_api():
     conn = get_conn()
     result = compute_portfolio(conn)
     conn.close()
     return result
+
+
+@app.get("/api/history")
+def history_api():
+    conn = get_conn()
+    result = history_series(conn)
+    conn.close()
+    return result
+
+
+@app.get("/history.csv")
+def history_csv_download():
+    conn = get_conn()
+    content = history_csv(conn)
+    conn.close()
+    return Response(
+        content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=nav_history.csv"},
+    )
 
 
 @app.post("/api/prices/refresh")

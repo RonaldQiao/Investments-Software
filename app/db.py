@@ -18,8 +18,9 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
-def init_db() -> None:
-    conn = get_conn()
+def init_db(conn: sqlite3.Connection | None = None) -> None:
+    own_conn = conn is None
+    conn = conn or get_conn()
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS instruments (
@@ -117,7 +118,8 @@ def init_db() -> None:
     )
     conn.execute("INSERT OR IGNORE INTO lps(name,is_gp) VALUES ('Principal',0)")
     conn.commit()
-    conn.close()
+    if own_conn:
+        conn.close()
 
 
 def get_setting(conn: sqlite3.Connection, key: str, default: Any = None) -> Any:
