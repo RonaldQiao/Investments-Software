@@ -1,5 +1,5 @@
 {% extends "base.html" %}{% set title="History" %}
-{% block actions %}<form class="inline" method="post" action="/snapshots/now"><button>Snapshot now</button></form><a class="button" href="/history.csv">Export CSV</a>{% endblock %}
+{% block actions %}<div class="page-actions"><form class="inline" method="post" action="/snapshots/now"><button>Snapshot now</button></form><a class="button" href="/history.csv">Export CSV</a></div>{% endblock %}
 {% block content %}
 <section class="headline summary">
   <div><label>Inception-to-date</label><strong>{{ summary.inception_return|percent }}</strong></div>
@@ -9,7 +9,7 @@
   <div><label>Max drawdown</label><strong>{{ summary.max_drawdown|percent }}</strong></div>
   <div><label>Best / worst day</label><strong>{{ summary.best_day|percent }} / {{ summary.worst_day|percent }}</strong></div>
 </section>
-<div class="chart">{% if chart_points %}<svg viewBox="0 0 1000 160" preserveAspectRatio="none" aria-label="NAV per unit chart"><polyline points="{{ chart_points }}" fill="none" stroke="#111" stroke-width="1"/><text x="0" y="12">{{ chart_max|number }}</text><text x="0" y="158">{{ chart_min|number }}</text></svg>{% else %}<p class="empty">No snapshots.</p>{% endif %}</div>
+<div class="chart">{% if chart_points %}<svg viewBox="0 0 1000 160" preserveAspectRatio="none" aria-label="NAV per unit chart"><line x1="0" y1="{{ chart_inception_y }}" x2="1000" y2="{{ chart_inception_y }}" stroke="#ccc" stroke-width="1" stroke-dasharray="2 3"/><polyline points="{{ chart_points }}" fill="none" stroke="#000" stroke-width="1"/><text x="0" y="12">{{ chart_max|number }}</text><text x="0" y="158">{{ chart_min|number }}</text></svg>{% else %}<p class="empty">No snapshots.</p>{% endif %}</div>
 <table><thead><tr><th>Date</th><th>NAV</th><th>NAV/unit</th><th>Daily return</th><th>Levered</th><th>Cumulative</th><th>Flows</th><th>Gross long</th><th>Gross short</th><th>Cash</th><th>Source</th><th></th></tr></thead><tbody>
 {% for row in snapshots|reverse %}<tr><td>{{ row.date }}</td><td class="num">{{ row.nav|number }}</td><td class="num">{{ row.nav_per_unit|number }}</td><td class="num {{ 'negative' if row.daily_return is not none and row.daily_return < 0 }}">{{ row.daily_return|percent }}</td><td class="num {{ 'negative' if row.levered_return is not none and row.levered_return < 0 }}">{{ row.levered_return|percent }}</td><td class="num {{ 'negative' if row.cumulative_return is not none and row.cumulative_return < 0 }}">{{ row.cumulative_return|percent }}</td><td class="num">{{ row.flows_today|number }}</td><td class="num">{{ row.gross_long|number }}</td><td class="num">{{ row.gross_short|number }}</td><td class="num">{{ row.cash|number }}</td><td>{{ row.source }}</td><td><form method="post" action="/snapshots/{{ row.date }}/delete"><button>Delete</button></form></td></tr>{% else %}<tr><td colspan="12" class="empty">No snapshots.</td></tr>{% endfor %}</tbody></table>
 {% endblock %}

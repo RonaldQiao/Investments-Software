@@ -243,11 +243,11 @@ def fees_context(conn, request: Request):
         try:
             calc = fee_scenario(
                 params["starting_nav"],
+                params.get("starting_nav_per_unit", 1000),
+                params.get("hwm_per_unit", params.get("hwm")),
                 params.get("gross_return_pct", params.get("gross_return", 0)),
-                params.get("mgmt_pct", params.get("mgmt", 0)),
-                params.get("perf_pct", params.get("perf", 0)),
-                params.get("hwm_per_unit", params.get("hwm", 1000)),
-                params.get("current_nav_per_unit", params.get("current_nav", 1000)),
+                params.get("mgmt_pct", params.get("mgmt", 2)),
+                params.get("perf_pct", params.get("perf", 20)),
             )
         except (TypeError, ValueError):
             calc = None

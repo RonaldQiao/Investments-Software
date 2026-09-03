@@ -259,6 +259,9 @@ def history_series(conn):
         ]
     else:
         low = high = 0
+    chart_inception_y = (
+        150 - ((1000 - low) / (high - low or 1)) * 140 if nav_units else 150
+    )
     return {
         "snapshots": rows,
         "summary": summary,
@@ -266,6 +269,7 @@ def history_series(conn):
         "chart_points": " ".join(chart_points),
         "chart_min": low,
         "chart_max": high,
+        "chart_inception_y": chart_inception_y,
     }
 
 

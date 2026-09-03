@@ -33,22 +33,6 @@ def run_job():
     conn.close()
 
 
-def catch_up(conn=None):
-    own_conn = conn is None
-    conn = conn or get_conn()
-    now = datetime.now(NY)
-    day = now.date()
-    if not is_trading_day(day) or now.time() < time(16):
-        day = day.fromordinal(day.toordinal() - 1)
-        while not is_trading_day(day):
-            day = day.fromordinal(day.toordinal() - 1)
-    if _missing_snapshot(conn, day) and str(get_setting(conn, "snapshot_enabled", "1")) == "1":
-        take_snapshot(conn, day, "scheduled", refresh=True)
-        LOGGER.info("Catch-up NAV snapshot written for %s", day)
-    if own_conn:
-        conn.close()
-
-
 async def catch_up_async():
     conn = get_conn()
     now = datetime.now(NY)

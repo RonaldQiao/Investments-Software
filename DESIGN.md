@@ -43,7 +43,7 @@ lp_units      id, lp_id, ts, units (+/-), nav_per_unit, cash_flow_id
 nav_snapshots date PK, ts, nav, cash, gross_long, gross_short, net_exposure,
               flows_today, units_outstanding, nav_per_unit, daily_return,
               levered_return, mgmt_fee_accrued, source ('scheduled'|'manual')
-fee_events    id, ts, kind ('mgmt'|'perf'), amount, hwm_before, hwm_after, note
+fee_events    id, ts, kind ('mgmt'|'perf'|'settle'), amount, hwm_before, hwm_after, note
 settings      key PK, value   (leverage, borrow_rate, fund_name, mgmt_fee_bps,
                                perf_fee_pct, hwm_per_unit, inception_nav_per_unit=1000)
 ```
@@ -84,7 +84,24 @@ settings      key PK, value   (leverage, borrow_rate, fund_name, mgmt_fee_bps,
 
 ## Aesthetics
 
-White, near-black text, 1px #e5e5e5 rules, no cards/shadows/radii/gradients/icons.
-System sans with tabular numerals; 11px uppercase letter-spaced labels; dense
-tables. Top nav is plain text links. Every page is server-rendered; JS is only for
-inline edits and the leverage slider. Target: < 20 KB total CSS+JS, TTFB < 20 ms.
+The interface follows paradigm.xyz's type system: white background, black text,
+muted `#666` and faint `#999` text, `#ccc` controls, `#ddd`/`#eee` table rules,
+`#f6f6f6` table headers/totals, and `#e04545` for negative values. No other
+colors, cards, shadows, gradients, icons, or rounded corners are used.
+
+Serif copy and headings use `Georgia, "Times New Roman", serif`; headings are
+400 weight with `letter-spacing: -0.03em`, and body copy is 16px with 1.25
+line-height. Numbers, labels, table cells, controls, buttons, inputs, and meta
+lines use `"SFMono-Regular", Menlo, Monaco, Consolas, monospace` at 12px with
+tabular number features. Labels and table headers are 10px uppercase mono.
+
+The desktop gutter is 36px with a fluid content width. Navigation uses a mono
+uppercase wordmark and 16px serif links with 24px gaps. Headline strips use
+black top/bottom rules, 24px vertical padding, 36px column gaps, and 28px
+serif display values. Section headings have a black top rule and 16px padding.
+Tables use black header rules, `#eee` row rules, 10px by 8px cell padding, and
+`#f6f6f6` row hover. Buttons are 30px sentence-case mono controls with black
+borders and black hover fill. Focus-visible controls use a black outline.
+
+Every page is server-rendered; JavaScript is only for inline edits and the
+leverage slider. Keep CSS under 8 KB, with no external fonts or CDN assets.
