@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ fund_name }} — {{ title|default('Dashboard') }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}">
+</head>
+<body>
+<header><div class="nav"><a class="brand" href="/">{{ fund_name }}</a><nav>
+  <a href="/">Dashboard</a><a href="/positions">Positions</a><a href="/trades">Trades</a>
+  <a href="/capital">Capital</a><a href="/fees">Fees</a><a href="/history">History</a><a href="/settings">Settings</a>
+</nav></div></header>
+<main><div class="page-head"><h1>{{ title|default('Dashboard') }}</h1>{% block actions %}{% endblock %}</div>
+{% block content %}{% endblock %}
+</main>
+<script src="{{ url_for('static', path='app.js') }}"></script>
+</body></html>

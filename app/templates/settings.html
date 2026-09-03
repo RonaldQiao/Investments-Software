@@ -1,0 +1,2 @@
+{% extends "base.html" %}{% set title="Settings" %}
+{% block content %}<form class="settings" method="post" action="/settings"><label>Fund name<input name="fund_name" value="{{ settings.fund_name }}"></label><label>Leverage <output id="leverage-value">{{ settings.leverage }}×</output><input id="leverage" name="leverage" type="range" min="1" max="5" step=".1" value="{{ settings.leverage }}"></label><label>Borrow rate<input name="borrow_rate" type="number" step=".001" value="{{ settings.borrow_rate }}"></label><button>Save settings</button></form>{% endblock %}
