@@ -1,5 +1,7 @@
 const slider=document.querySelector("#leverage");
 if(slider){const output=document.querySelector("#leverage-value");const show=()=>output.textContent=`${Number(slider.value).toFixed(1)}×`;slider.addEventListener("input",show);show();}
+const fundSwitch=document.querySelector(".fund-switch select");
+if(fundSwitch)fundSwitch.addEventListener("change",()=>fundSwitch.form.submit());
 const addInstrument=document.querySelector('form.form-grid[action="/instruments"]');
 if(addInstrument){
   const symbol=addInstrument.elements.symbol;

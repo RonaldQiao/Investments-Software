@@ -9,7 +9,7 @@ from fastapi import Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from .db import get_conn, get_setting
+from .db import get_conn, get_setting, list_funds
 
 ROOT = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=ROOT / "templates")
@@ -19,6 +19,12 @@ def context(request: Request, **kwargs):
     conn = get_conn()
     kwargs.setdefault("fund_name", get_setting(conn, "fund_name", "Ledger"))
     conn.close()
+    funds = list_funds()
+    kwargs.setdefault("funds", funds)
+    kwargs.setdefault(
+        "active_fund",
+        next((fund["slug"] for fund in funds if fund["active"]), "ledger"),
+    )
     if kwargs.get("error") is None:
         kwargs["error"] = request.query_params.get("error")
     if kwargs.get("ok") is None:

@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from ..db import get_conn, get_setting, set_setting
+from ..db import DB_PATH, DEFAULT_FUND, get_conn, get_setting, set_setting
 from ..web import flash_redirect, render, row_dicts
 
 router = APIRouter()
@@ -42,7 +42,11 @@ def backup_database():
         os.environ.get("LEDGER_BACKUP_DIR", str(Path(database_file).parent / "backups"))
     )
     backup_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"ledger-{datetime.now(ZoneInfo('America/New_York')).strftime('%Y%m%d-%H%M%S')}.db"
+    fund_slug = DEFAULT_FUND if Path(database_file) == DB_PATH else Path(database_file).stem
+    filename = (
+        f"ledger-{fund_slug}-"
+        f"{datetime.now(ZoneInfo('America/New_York')).strftime('%Y%m%d-%H%M%S')}.db"
+    )
     target_path = backup_dir / filename
     target = sqlite3.connect(target_path)
     try:

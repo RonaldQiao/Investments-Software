@@ -45,6 +45,12 @@ The Positions Add instrument form supports optional LONG/SHORT opening fields
 creation, and `/api/lookup?symbol=NBIS` provides Yahoo symbol metadata and a
 current price for autofill.
 
+## Multiple funds
+
+Each fund is a separate SQLite file. Use the header selector or Settings →
+New fund to create and switch funds; `LEDGER_DB` still points to the default
+fund, and `python -m app.snapshot --fund x` targets one fund explicitly.
+
 Use `make backup` (or `POST /backup` in Settings) to create a SQLite backup in
 `data/backups/`. Only the newest 20 backups are retained. GitHub Actions runs
 the test suite on every push and pull request.

@@ -5,11 +5,12 @@ import os
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from .db import init_db
+from .db import ACTIVE_DB, DEFAULT_FUND, fund_path, get_conn, init_db, list_funds
 from .routes.api import router as api_router
 from .routes.capital import router as capital_router
 from .routes.dashboard import router as dashboard_router
 from .routes.fees import router as fees_router
+from .routes.funds import router as funds_router
 from .routes.history import router as history_router
 from .routes.pnl import router as pnl_router
 from .routes.positions import router as positions_router
@@ -25,6 +26,20 @@ ROOT = os.path.dirname(__file__)
 app = FastAPI(title="Ledger")
 app.mount("/static", StaticFiles(directory=os.path.join(ROOT, "static")), name="static")
 
+
+@app.middleware("http")
+async def select_fund(request, call_next):
+    slugs = {fund["slug"] for fund in list_funds()}
+    slug = request.cookies.get("fund")
+    if slug not in slugs:
+        slug = DEFAULT_FUND
+    token = ACTIVE_DB.set(fund_path(slug))
+    try:
+        return await call_next(request)
+    finally:
+        ACTIVE_DB.reset(token)
+
+
 app.include_router(dashboard_router)
 app.include_router(update_router)
 app.include_router(positions_router)
@@ -34,6 +49,7 @@ app.include_router(capital_router)
 app.include_router(fees_router)
 app.include_router(history_router)
 app.include_router(settings_router)
+app.include_router(funds_router)
 app.include_router(api_router)
 
 __all__ = ["app", "backup_database"]
@@ -41,7 +57,12 @@ __all__ = ["app", "backup_database"]
 
 @app.on_event("startup")
 async def startup():
-    init_db()
+    for fund in list_funds():
+        conn = get_conn(fund["path"])
+        try:
+            init_db(conn)
+        finally:
+            conn.close()
     if os.environ.get("LEDGER_NO_SCHEDULER") != "1":
         await catch_up_async()
         start_scheduler()
