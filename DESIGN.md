@@ -43,9 +43,11 @@ lp_units      id, lp_id, ts, units (+/-), nav_per_unit, cash_flow_id
 nav_snapshots date PK, ts, nav, cash, gross_long, gross_short, net_exposure,
               flows_today, units_outstanding, nav_per_unit, daily_return,
               levered_return, mgmt_fee_accrued, source ('scheduled'|'manual')
+snapshot_marks date, instrument_id, mark, source ('yahoo'|'manual'|'snapshot'|'fallback')
 fee_events    id, ts, kind ('mgmt'|'perf'|'settle'), amount, hwm_before, hwm_after, note
 settings      key PK, value   (leverage, borrow_rate, fund_name, mgmt_fee_bps,
-                               perf_fee_pct, hwm_per_unit, inception_nav_per_unit=1000)
+                               perf_fee_pct, hwm_per_unit, inception_nav_per_unit=1000,
+                               last_refresh_failures, last_refresh_at)
 ```
 
 ## Accounting rules
@@ -58,8 +60,12 @@ settings      key PK, value   (leverage, borrow_rate, fund_name, mgmt_fee_bps,
   A "Set position" shortcut on the Positions page generates the adjusting trade.
 - **Cash** = Σ cash_flows + Σ(SELL proceeds) − Σ(BUY cost) − Σ fees, all scaled by
   multiplier. Shorts add proceeds to cash, so NAV is correct without a margin model.
-- **Mark** = manual_mark if pricing_source = manual (or if no fetched price exists),
-  else latest fetched price. Manual instruments are never touched by the fetcher.
+- **Mark** = manual_mark for manual instruments, else the latest fetched Yahoo price.
+  A failed or missing Yahoo mark is shown as unavailable in the live portfolio and
+  never silently contributes zero to a snapshot. Snapshots audit each mark in
+  `snapshot_marks`; failed/missing marks use the prior snapshot's mark, or
+  `avg_price` with source `fallback` when no prior mark exists. Manual instruments
+  are never touched by the fetcher.
 - **NAV** = cash + Σ signed_qty × mark × multiplier.
   Gross long / gross short / net exposure are reported alongside.
 - **Units.** Inception NAV/unit = 1000. Every cash flow issues (or redeems) units at

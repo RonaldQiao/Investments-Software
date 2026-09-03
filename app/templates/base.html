@@ -12,6 +12,7 @@
   <a class="{{ 'active' if request.url.path == '/capital' else '' }}" href="/capital">Capital</a><a class="{{ 'active' if request.url.path == '/fees' else '' }}" href="/fees">Fees</a><a class="{{ 'active' if request.url.path == '/history' else '' }}" href="/history">History</a><a class="{{ 'active' if request.url.path == '/settings' else '' }}" href="/settings">Settings</a>
 </nav></div></header>
 <main><div class="page-head"><h1>{{ title|default('Dashboard') }}</h1>{% block actions %}{% endblock %}</div>
+{% if error or ok %}<p class="flash">{% if error %}<span class="error">{{ error }}</span>{% endif %}{% if ok %}<span class="ok">{{ ok }}</span>{% endif %}</p>{% endif %}
 {% block content %}{% endblock %}
 </main>
 <script src="{{ url_for('static', path='app.js') }}"></script>

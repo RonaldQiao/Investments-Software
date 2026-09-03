@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 import math
 from datetime import date, datetime, timezone
 
@@ -11,7 +12,25 @@ from .pricing import refresh_prices
 from .positions import build_positions, cash_from_trades
 
 
-def compute_portfolio(conn):
+def _price_age_seconds(ts, now):
+    if not ts:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, (now - parsed).total_seconds())
+    except ValueError:
+        return None
+
+
+def compute_portfolio(conn, mark_overrides=None):
+    mark_overrides = mark_overrides or {}
+    now = datetime.now(timezone.utc)
+    try:
+        failed_symbols = set(json.loads(get_setting(conn, "last_refresh_failures", "[]")))
+    except (TypeError, json.JSONDecodeError):
+        failed_symbols = set()
     instruments = conn.execute("SELECT * FROM instruments ORDER BY symbol").fetchall()
     trades = conn.execute(
         "SELECT t.*, i.multiplier FROM trades t JOIN instruments i ON i.id=t.instrument_id "
@@ -32,16 +51,25 @@ def compute_portfolio(conn):
         if not pos or pos.qty == 0:
             continue
         price_row = price_rows.get(instrument["id"])
-        mark = (
-            float(instrument["manual_mark"])
-            if instrument["pricing_source"] == "manual" and instrument["manual_mark"] is not None
-            else (float(price_row["price"]) if price_row else instrument["manual_mark"])
+        failed = instrument["symbol"] in failed_symbols or (
+            instrument["yahoo_symbol"] and instrument["yahoo_symbol"] in failed_symbols
         )
-        if mark is None:
-            mark = 0.0
+        if instrument["id"] in mark_overrides:
+            mark = float(mark_overrides[instrument["id"]])
+        elif instrument["pricing_source"] == "manual":
+            mark = (
+                float(instrument["manual_mark"])
+                if instrument["manual_mark"] is not None
+                else None
+            )
+        elif price_row and not failed:
+            mark = float(price_row["price"])
+        else:
+            mark = None
+        calculation_mark = mark if mark is not None else 0.0
         mult = float(instrument["multiplier"])
-        market_value = pos.qty * mark * mult
-        unrealized = (mark - pos.avg_price) * pos.qty * mult
+        market_value = pos.qty * calculation_mark * mult
+        unrealized = (calculation_mark - pos.avg_price) * pos.qty * mult
         if market_value >= 0:
             gross_long += market_value
         else:
@@ -64,6 +92,11 @@ def compute_portfolio(conn):
                 "unrealized": unrealized,
                 "realized": pos.realized_pnl,
                 "price_ts": price_row["ts"] if price_row else None,
+                "price_age_seconds": _price_age_seconds(
+                    price_row["ts"] if price_row else None, now
+                ),
+                "price_failed": bool(failed),
+                "manual_mark_at": instrument["manual_mark_at"],
             }
         )
     cash = float(flows) + cash_from_trades(trades)
@@ -87,6 +120,49 @@ def compute_portfolio(conn):
     }
 
 
+def exposure_by_class(portfolio):
+    grouped = {}
+    for position in portfolio["positions"]:
+        asset_class = position["asset_class"]
+        row = grouped.setdefault(
+            asset_class,
+            {
+                "class": asset_class,
+                "asset_class": asset_class,
+                "long": 0.0,
+                "short": 0.0,
+                "net": 0.0,
+                "gross": 0.0,
+                "unrealized": 0.0,
+            },
+        )
+        market_value = float(position["market_value"])
+        if market_value >= 0:
+            row["long"] += market_value
+        else:
+            row["short"] += -market_value
+        row["net"] += market_value
+        row["gross"] += abs(market_value)
+        row["unrealized"] += float(position["unrealized"])
+    nav = float(portfolio.get("net_nav", portfolio.get("nav", 0)) or 0)
+    rows = sorted(grouped.values(), key=lambda row: row["gross"], reverse=True)
+    for row in rows:
+        row["pct_nav"] = row["gross"] / nav if nav else 0.0
+        row["pct_of_nav"] = row["pct_nav"]
+    total = {
+        "class": "Total",
+        "asset_class": "Total",
+        "long": sum(row["long"] for row in rows),
+        "short": sum(row["short"] for row in rows),
+        "net": sum(row["net"] for row in rows),
+        "gross": sum(row["gross"] for row in rows),
+        "unrealized": sum(row["unrealized"] for row in rows),
+    }
+    total["pct_nav"] = total["gross"] / nav if nav else 0.0
+    total["pct_of_nav"] = total["pct_nav"]
+    return rows + [total]
+
+
 def _snapshot_row(conn, snapshot_date):
     return conn.execute(
         "SELECT * FROM nav_snapshots WHERE date=?", (snapshot_date.isoformat(),)
@@ -99,7 +175,45 @@ def take_snapshot(
     existing = _snapshot_row(conn, snapshot_date)
     if refresh:
         asyncio.run(refresh_prices(conn))
-    portfolio = compute_portfolio(conn)
+    live_portfolio = compute_portfolio(conn)
+    previous_marks = {}
+    for row in conn.execute(
+            "SELECT sm.instrument_id,sm.mark FROM snapshot_marks sm "
+            "JOIN nav_snapshots ns ON ns.date=sm.date "
+            "WHERE ns.date<? ORDER BY ns.date DESC",
+            (snapshot_date.isoformat(),),
+        ).fetchall():
+        previous_marks.setdefault(row["instrument_id"], row["mark"])
+    mark_overrides = {}
+    snapshot_mark_rows = []
+    for position in live_portfolio["positions"]:
+        if position["pricing_source"] == "manual" and position["mark"] is not None:
+            mark_overrides[position["instrument_id"]] = position["mark"]
+            snapshot_mark_rows.append(
+                (position["instrument_id"], position["mark"], "manual")
+            )
+        elif not position["price_failed"] and position["mark"] is not None:
+            mark_overrides[position["instrument_id"]] = position["mark"]
+            snapshot_mark_rows.append(
+                (position["instrument_id"], position["mark"], "yahoo")
+            )
+        elif position["instrument_id"] in previous_marks:
+            mark_overrides[position["instrument_id"]] = previous_marks[
+                position["instrument_id"]
+            ]
+            snapshot_mark_rows.append(
+                (
+                    position["instrument_id"],
+                    previous_marks[position["instrument_id"]],
+                    "snapshot",
+                )
+            )
+        else:
+            mark_overrides[position["instrument_id"]] = position["avg_price"]
+            snapshot_mark_rows.append(
+                (position["instrument_id"], position["avg_price"], "fallback")
+            )
+    portfolio = compute_portfolio(conn, mark_overrides)
     gross_nav = float(portfolio["nav"])
     liability = float(get_setting(conn, "fee_liability", 0) or 0)
     first_snapshot = existing is None and not conn.execute(
@@ -198,6 +312,11 @@ def take_snapshot(
         "levered_return=excluded.levered_return,mgmt_fee_accrued=excluded.mgmt_fee_accrued,"
         "source=excluded.source",
         values,
+    )
+    conn.execute("DELETE FROM snapshot_marks WHERE date=?", (values["date"],))
+    conn.executemany(
+        "INSERT INTO snapshot_marks(date,instrument_id,mark,source) VALUES (?,?,?,?)",
+        [(values["date"], instrument_id, mark, mark_source) for instrument_id, mark, mark_source in snapshot_mark_rows],
     )
     conn.commit()
     return dict(conn.execute("SELECT * FROM nav_snapshots WHERE date=?", (values["date"],)).fetchone())

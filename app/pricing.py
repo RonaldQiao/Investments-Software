@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 
 import httpx
 
-from .db import get_conn
+from .db import get_conn, set_setting
 
 
 async def fetch_yahoo(symbols: list[str]) -> dict[str, float | None]:
@@ -53,6 +54,8 @@ async def refresh_prices(conn) -> list[str]:
             "ts=excluded.ts,source=excluded.source",
             (row["id"], price, now),
         )
+    set_setting(conn, "last_refresh_failures", json.dumps(failed))
+    set_setting(conn, "last_refresh_at", now)
     conn.commit()
     return failed
 

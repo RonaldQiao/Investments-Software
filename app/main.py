@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import json
 import os
 import sqlite3
 from datetime import date, datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Form, Request
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -21,10 +24,21 @@ from .fees import (
     record_cash_flow,
     settle_fees,
 )
-from .nav import compute_portfolio, history_csv, history_series, take_snapshot
+from .nav import (
+    compute_portfolio,
+    exposure_by_class,
+    history_csv,
+    history_series,
+    take_snapshot,
+)
 from .pricing import refresh_prices
 from .positions import build_positions
-from .scheduler import catch_up_async, start as start_scheduler, stop as stop_scheduler
+from .scheduler import (
+    catch_up_async,
+    next_snapshot_label,
+    start as start_scheduler,
+    stop as stop_scheduler,
+)
 
 ROOT = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=ROOT / "templates")
@@ -49,6 +63,10 @@ def context(request: Request, **kwargs):
     conn = get_conn()
     kwargs.setdefault("fund_name", get_setting(conn, "fund_name", "Ledger"))
     conn.close()
+    if kwargs.get("error") is None:
+        kwargs["error"] = request.query_params.get("error")
+    if kwargs.get("ok") is None:
+        kwargs["ok"] = request.query_params.get("ok")
     return {"request": request, **kwargs}
 
 
@@ -69,8 +87,22 @@ def percent(value):
     return f"{'−' if value < 0 else '+'}{abs(value) * 100:.2f}%"
 
 
+def age(value):
+    if value is None:
+        return ""
+    seconds = int(value)
+    if seconds >= 86400:
+        return f"{seconds // 86400}d"
+    return f"{max(1, seconds // 3600)}h"
+
+
+def flash_redirect(path, key, message):
+    return RedirectResponse(f"{path}?{key}={quote(str(message))}", status_code=303)
+
+
 templates.env.filters["number"] = number
 templates.env.filters["percent"] = percent
+templates.env.filters["age"] = age
 
 
 def render(request: Request, name: str, status_code: int = 200, **kwargs):
@@ -86,11 +118,14 @@ def render(request: Request, name: str, status_code: int = 200, **kwargs):
 def dashboard(request: Request):
     conn = get_conn()
     portfolio = compute_portfolio(conn)
-    latest = conn.execute("SELECT MAX(ts) ts FROM prices").fetchone()["ts"]
+    latest = get_setting(conn, "last_refresh_at", "") or conn.execute(
+        "SELECT MAX(ts) ts FROM prices"
+    ).fetchone()["ts"]
     fee_liability = float(get_setting(conn, "fee_liability", 0) or 0)
     snapshot = conn.execute(
         "SELECT date,nav_per_unit,daily_return FROM nav_snapshots ORDER BY date DESC LIMIT 1"
     ).fetchone()
+    next_snapshot = next_snapshot_label(conn)
     conn.close()
     portfolio["fees_accrued"] = fee_liability
     return render(
@@ -99,6 +134,8 @@ def dashboard(request: Request):
         portfolio=portfolio,
         latest_refresh=latest,
         latest_snapshot=snapshot,
+        exposure=exposure_by_class(portfolio),
+        next_snapshot=next_snapshot,
     )
 
 
@@ -124,6 +161,28 @@ def trades_page(request: Request):
     )
     conn.close()
     return render(request, "trades.html", instruments=instruments, trades=trades)
+
+
+@app.get("/trades.csv")
+def trades_csv():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT t.ts,i.symbol,t.side,t.quantity,t.price,t.fees,t.notes "
+        "FROM trades t JOIN instruments i ON i.id=t.instrument_id ORDER BY t.ts,t.id"
+    ).fetchall()
+    conn.close()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ts", "symbol", "side", "quantity", "price", "fees", "notes"])
+    writer.writerows(
+        [row["ts"], row["symbol"], row["side"], row["quantity"], row["price"], row["fees"], row["notes"] or ""]
+        for row in rows
+    )
+    return Response(
+        output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=trades.csv"},
+    )
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -214,16 +273,8 @@ def add_capital_flow(
         signed_amount = amount if flow_type == "Contribution" else -amount
         record_cash_flow(conn, timestamp, signed_amount, selected_lp, note.strip())
     except (ValueError, TypeError, sqlite3.IntegrityError) as exc:
-        data = capital_context(conn)
         conn.close()
-        return render(
-            request,
-            "capital.html",
-            status_code=400,
-            error=str(exc),
-            today=datetime.now(ZoneInfo("America/New_York")).date().isoformat(),
-            **data,
-        )
+        return flash_redirect("/capital", "error", str(exc))
     conn.close()
     return RedirectResponse("/capital", status_code=303)
 
@@ -327,9 +378,8 @@ def settle_fee_liability(request: Request):
     try:
         settle_fees(conn, datetime.now(timezone.utc))
     except ValueError as exc:
-        data = fees_context(conn, request)
         conn.close()
-        return render(request, "fees.html", status_code=400, error=str(exc), **data)
+        return flash_redirect("/fees", "error", str(exc))
     conn.close()
     return RedirectResponse("/fees", status_code=303)
 
@@ -371,24 +421,71 @@ def add_instrument(
     notes: str = Form(""),
 ):
     conn = get_conn()
+    try:
+        conn.execute(
+            "INSERT INTO instruments(symbol,name,asset_class,currency,multiplier,pricing_source,"
+            "yahoo_symbol,manual_mark,notes) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                symbol.strip().upper(),
+                name.strip(),
+                asset_class,
+                currency.strip().upper(),
+                multiplier,
+                pricing_source,
+                yahoo_symbol.strip() or None,
+                float(manual_mark) if manual_mark.strip() else None,
+                notes.strip(),
+            ),
+        )
+        conn.commit()
+    except (ValueError, TypeError, sqlite3.IntegrityError) as exc:
+        conn.close()
+        return flash_redirect("/positions", "error", str(exc))
+    conn.close()
+    return flash_redirect("/positions", "ok", "Instrument added")
+
+
+@app.post("/instruments/{instrument_id}/edit")
+def edit_instrument(
+    instrument_id: int,
+    name: str = Form(...),
+    asset_class: str = Form(...),
+    multiplier: float = Form(...),
+    pricing_source: str = Form(...),
+    yahoo_symbol: str = Form(""),
+    notes: str = Form(""),
+):
+    conn = get_conn()
+    instrument = conn.execute(
+        "SELECT * FROM instruments WHERE id=?", (instrument_id,)
+    ).fetchone()
+    if not instrument:
+        conn.close()
+        return flash_redirect("/positions", "error", "Instrument not found")
+    position = conn.execute(
+        "SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN quantity ELSE -quantity END),0) "
+        "FROM trades WHERE instrument_id=?",
+        (instrument_id,),
+    ).fetchone()[0]
     conn.execute(
-        "INSERT INTO instruments(symbol,name,asset_class,currency,multiplier,pricing_source,"
-        "yahoo_symbol,manual_mark,notes) VALUES (?,?,?,?,?,?,?,?,?)",
+        "UPDATE instruments SET name=?,asset_class=?,multiplier=?,pricing_source=?,"
+        "yahoo_symbol=?,notes=? WHERE id=?",
         (
-            symbol.strip().upper(),
             name.strip(),
             asset_class,
-            currency.strip().upper(),
             multiplier,
             pricing_source,
             yahoo_symbol.strip() or None,
-            float(manual_mark) if manual_mark.strip() else None,
             notes.strip(),
+            instrument_id,
         ),
     )
     conn.commit()
     conn.close()
-    return RedirectResponse("/positions", status_code=303)
+    message = "Instrument updated"
+    if float(multiplier) != float(instrument["multiplier"]) and abs(float(position)) > 1e-12:
+        message += "; multiplier changed; NAV recomputed"
+    return flash_redirect("/positions", "ok", message)
 
 
 @app.post("/instruments/{instrument_id}/mark")
@@ -470,6 +567,53 @@ def add_trade(
     return RedirectResponse("/trades", status_code=303)
 
 
+@app.post("/trades/import")
+async def import_trades(file: UploadFile = File(...)):
+    conn = get_conn()
+    try:
+        content = (await file.read()).decode("utf-8-sig")
+        reader = csv.DictReader(io.StringIO(content))
+        expected = ["ts", "symbol", "side", "quantity", "price", "fees", "notes"]
+        if reader.fieldnames != expected:
+            raise ValueError("CSV columns must be: " + ", ".join(expected))
+        instruments = {
+            row["symbol"]: row["id"]
+            for row in conn.execute("SELECT id,symbol FROM instruments").fetchall()
+        }
+        pending = []
+        unknown = []
+        for row_number, row in enumerate(reader, start=2):
+            symbol = (row.get("symbol") or "").strip().upper()
+            if symbol not in instruments:
+                unknown.append(f"row {row_number}: {symbol or '(blank)'}")
+                continue
+            pending.append(
+                (
+                    instruments[symbol],
+                    row["ts"],
+                    row["side"].strip().upper(),
+                    float(row["quantity"]),
+                    float(row["price"]),
+                    float(row["fees"] or 0),
+                    row["notes"] or "",
+                )
+            )
+        if unknown:
+            raise ValueError("Unknown symbols: " + ", ".join(unknown))
+        conn.executemany(
+            "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) "
+            "VALUES (?,?,?,?,?,?,?)",
+            pending,
+        )
+        conn.commit()
+    except (UnicodeDecodeError, ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+        conn.rollback()
+        conn.close()
+        return flash_redirect("/trades", "error", str(exc))
+    conn.close()
+    return flash_redirect("/trades", "ok", f"Imported {len(pending)} trades")
+
+
 @app.post("/trades/{trade_id}/delete")
 def delete_trade(trade_id: int):
     conn = get_conn()
@@ -479,6 +623,23 @@ def delete_trade(trade_id: int):
     return RedirectResponse("/trades", status_code=303)
 
 
+@app.post("/prices/refresh")
+async def prices_refresh_page():
+    conn = get_conn()
+    total = conn.execute(
+        "SELECT COUNT(*) FROM instruments WHERE pricing_source='yahoo'"
+    ).fetchone()[0]
+    failed = await refresh_prices(conn)
+    conn.close()
+    if failed:
+        return flash_redirect(
+            "/",
+            "error",
+            f"Refreshed {total - len(failed)} prices, {len(failed)} failed: {', '.join(failed)}",
+        )
+    return flash_redirect("/", "ok", f"Refreshed {total} prices, 0 failed")
+
+
 @app.post("/snapshots/now")
 async def snapshot_now():
     conn = get_conn()
@@ -486,7 +647,9 @@ async def snapshot_now():
     today_ny = datetime.now(ZoneInfo("America/New_York")).date()
     take_snapshot(conn, today_ny, "manual", refresh=False)
     conn.close()
-    return RedirectResponse("/history", status_code=303)
+    return flash_redirect(
+        "/history", "ok", f"Snapshot written for {today_ny.isoformat()}"
+    )
 
 
 @app.post("/snapshots/{snapshot_date}/delete")
