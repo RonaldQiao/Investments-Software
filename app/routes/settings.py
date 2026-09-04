@@ -103,6 +103,10 @@ def save_settings(
     if len(base_currency) != 3 or not base_currency.isalpha():
         return flash_redirect("/settings", "error", "Base currency must be 3 letters")
     conn = get_conn()
+    previous_base = str(get_setting(conn, "base_currency", "USD")).strip().upper()
+    base_changed = base_currency != previous_base
+    if base_changed:
+        conn.execute("DELETE FROM fx_rates")
     set_setting(conn, "fund_name", fund_name.strip() or "Ledger")
     set_setting(conn, "leverage", min(5.0, max(1.0, leverage)))
     set_setting(conn, "borrow_rate", borrow_rate)
@@ -110,6 +114,12 @@ def save_settings(
     set_setting(conn, "benchmark_symbol", benchmark_symbol.strip().upper())
     set_setting(conn, "base_currency", base_currency)
     conn.close()
+    if base_changed:
+        return flash_redirect(
+            "/settings",
+            "ok",
+            "Base currency changed; FX rates will refetch on next price refresh",
+        )
     return RedirectResponse("/settings", status_code=303)
 
 

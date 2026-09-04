@@ -263,7 +263,7 @@ async def refresh_prices(conn) -> list[str]:
     currencies = []
     for row in conn.execute(
         "SELECT DISTINCT currency FROM instruments "
-        "WHERE UPPER(currency) != ? AND pricing_source != 'manual'",
+        "WHERE UPPER(currency) != ?",
         (base,),
     ).fetchall():
         currency = str(row["currency"]).upper()

@@ -217,9 +217,7 @@ def _resolve_mark(conn, instrument, previous_marks, failed_symbols, fallback_pri
         if mark is not None and not failed:
             return float(mark), "yahoo"
     if instrument_id in previous_marks:
-        previous_mark = previous_marks[instrument_id]
-        if isinstance(previous_mark, tuple):
-            previous_mark = previous_mark[0]
+        previous_mark, _ = previous_marks[instrument_id]
         return float(previous_mark), "snapshot"
     return float(fallback_price), "fallback"
 

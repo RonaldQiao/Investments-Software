@@ -131,6 +131,55 @@ def test_fx_fetch_inverts_and_manual_override_sticks(tmp_path, monkeypatch):
     conn.close()
 
 
+def test_manual_currency_refreshes_fx(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEDGER_DB", str(tmp_path / "ledger.db"))
+    db.DB_PATH = tmp_path / "ledger.db"
+    conn = db.get_conn()
+    db.init_db(conn)
+    conn.execute(
+        "INSERT INTO instruments(symbol,name,asset_class,currency,multiplier,pricing_source) "
+        "VALUES ('BOND','Euro bond','bond','EUR',1,'manual')"
+    )
+    conn.commit()
+
+    async def fake_fetch(symbols):
+        assert symbols == ["EURUSD=X"]
+        return {"EURUSD=X": 1.1}
+
+    monkeypatch.setattr("app.pricing.fetch_yahoo", fake_fetch)
+    asyncio.run(refresh_prices(conn))
+    row = conn.execute("SELECT rate,source FROM fx_rates WHERE currency='EUR'").fetchone()
+    assert dict(row) == {"rate": 1.1, "source": "yahoo"}
+    conn.close()
+
+
+def test_base_currency_change_clears_rates(fx_client):
+    conn = db.get_conn()
+    conn.execute(
+        "INSERT INTO fx_rates(currency,rate,ts,source) VALUES ('EUR',1.2,'now','manual')"
+    )
+    conn.commit()
+    conn.close()
+    response = fx_client.post(
+        "/settings",
+        data={
+            "fund_name": "Ledger",
+            "leverage": "1",
+            "borrow_rate": "0.05",
+            "snapshot_enabled": "1",
+            "benchmark_symbol": "SPY",
+            "base_currency": "EUR",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "Base%20currency%20changed%3B" in response.headers["location"]
+    conn = db.get_conn()
+    assert conn.execute("SELECT COUNT(*) FROM fx_rates").fetchone()[0] == 0
+    assert db.get_setting(conn, "base_currency") == "EUR"
+    conn.close()
+
+
 def test_lookup_returns_fx_rate(fx_client, monkeypatch):
     async def fake_meta(symbol):
         return {
