@@ -7,6 +7,7 @@ from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from ..db import get_conn
+from ..fx import trade_fx_rate
 from ..web import flash_redirect, render, row_dicts
 
 router = APIRouter()
@@ -29,15 +30,24 @@ def trades_page(request: Request):
 def trades_csv():
     conn = get_conn()
     rows = conn.execute(
-        "SELECT t.ts,i.symbol,t.side,t.quantity,t.price,t.fees,t.notes "
+        "SELECT t.ts,i.symbol,t.side,t.quantity,t.price,t.fees,t.fx_rate,t.notes "
         "FROM trades t JOIN instruments i ON i.id=t.instrument_id ORDER BY t.ts,t.id"
     ).fetchall()
     conn.close()
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["ts", "symbol", "side", "quantity", "price", "fees", "notes"])
+    writer.writerow(["ts", "symbol", "side", "quantity", "price", "fees", "fx_rate", "notes"])
     writer.writerows(
-        [row["ts"], row["symbol"], row["side"], row["quantity"], row["price"], row["fees"], row["notes"] or ""]
+        [
+            row["ts"],
+            row["symbol"],
+            row["side"],
+            row["quantity"],
+            row["price"],
+            row["fees"],
+            row["fx_rate"],
+            row["notes"] or "",
+        ]
         for row in rows
     )
     return Response(
@@ -55,11 +65,13 @@ def add_trade(
     quantity: float = Form(...),
     price: float = Form(...),
     fees: float = Form(0),
+    fx_rate: str = Form(""),
     notes: str = Form(""),
 ):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,fx_rate,notes) "
+        "VALUES (?,?,?,?,?,?,?,?)",
         (
             instrument_id,
             ts or datetime.now(UTC).isoformat(),
@@ -67,6 +79,7 @@ def add_trade(
             quantity,
             price,
             fees,
+            trade_fx_rate(conn, instrument_id, fx_rate),
             notes,
         ),
     )
@@ -81,9 +94,10 @@ async def import_trades(file: UploadFile = File(...)):  # noqa: B008
     try:
         content = (await file.read()).decode("utf-8-sig")
         reader = csv.DictReader(io.StringIO(content))
-        expected = ["ts", "symbol", "side", "quantity", "price", "fees", "notes"]
-        if reader.fieldnames != expected:
-            raise ValueError("CSV columns must be: " + ", ".join(expected))
+        expected = {"ts", "symbol", "side", "quantity", "price", "fees", "notes"}
+        expected_fx = expected | {"fx_rate"}
+        if set(reader.fieldnames or ()) not in (expected, expected_fx):
+            raise ValueError("CSV columns must include: " + ", ".join(sorted(expected)))
         instruments = {
             row["symbol"]: row["id"]
             for row in conn.execute("SELECT id,symbol FROM instruments").fetchall()
@@ -103,14 +117,15 @@ async def import_trades(file: UploadFile = File(...)):  # noqa: B008
                     float(row["quantity"]),
                     float(row["price"]),
                     float(row["fees"] or 0),
+                    trade_fx_rate(conn, instruments[symbol], row.get("fx_rate")),
                     row["notes"] or "",
                 )
             )
         if unknown:
             raise ValueError("Unknown symbols: " + ", ".join(unknown))
         conn.executemany(
-            "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,fx_rate,notes) "
+            "VALUES (?,?,?,?,?,?,?,?)",
             pending,
         )
         conn.commit()

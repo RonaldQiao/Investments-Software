@@ -8,8 +8,10 @@ if(addInstrument){
   const name=addInstrument.elements.name;
   const assetClass=addInstrument.elements.asset_class;
   const currency=addInstrument.elements.currency;
+  const currencyOther=addInstrument.elements.currency_other;
   const yahooSymbol=addInstrument.elements.yahoo_symbol;
   const avgPrice=addInstrument.elements.avg_price;
+  const fxRate=addInstrument.elements.fx_rate;
   const status=document.querySelector("#lookup-status");
   [assetClass,currency].forEach(field=>field.addEventListener("input",()=>{field.dataset.touched="1";}));
   let lastLookup="";
@@ -34,7 +36,12 @@ if(addInstrument){
       const meta=await response.json();
       if(!name.value)name.value=meta.name||"";
       if(!assetClass.dataset.touched)assetClass.value=meta.asset_class;
-      if(!currency.dataset.touched)currency.value=meta.currency;
+      if(!currency.dataset.touched){
+        const option=[...currency.options].find(item=>item.value===meta.currency);
+        currency.value=option?meta.currency:"other";
+        if(currency.value==="other"&&currencyOther)currencyOther.value=meta.currency;
+      }
+      if(fxRate&&!fxRate.value&&meta.fx_rate!=null)fxRate.value=meta.fx_rate;
       if(!yahooSymbol.value){yahooSymbol.value=meta.symbol;autoYahooSymbol=meta.symbol;}
       if(meta.price!=null){
         const price=Number(meta.price);
@@ -47,6 +54,15 @@ if(addInstrument){
   symbol.addEventListener("change",lookup);
   symbol.addEventListener("blur",lookup);
 }
+document.querySelectorAll(".currency-select").forEach(select=>{
+  const other=select.parentElement.querySelector(".currency-other");
+  if(!other)return;
+  const toggle=()=>{
+    other.hidden=select.value!=="other";
+    if(select.value!=="other")other.value="";
+  };
+  select.addEventListener("change",toggle);toggle();
+});
 document.querySelectorAll(".form-grid,.update-form").forEach(form=>{
   const select=form.querySelector('select[name="asset_class"]');
   const details=form.querySelector(".contract-fields");

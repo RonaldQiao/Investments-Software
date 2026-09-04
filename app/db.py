@@ -115,6 +115,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
           quantity REAL NOT NULL CHECK(quantity > 0),
           price REAL NOT NULL,
           fees REAL NOT NULL DEFAULT 0,
+          fx_rate REAL NOT NULL DEFAULT 1,
           notes TEXT
         );
         CREATE TABLE IF NOT EXISTS prices (
@@ -166,6 +167,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
           date TEXT NOT NULL REFERENCES nav_snapshots(date) ON DELETE CASCADE,
           instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
           mark REAL NOT NULL,
+          fx_rate REAL NOT NULL DEFAULT 1,
           source TEXT NOT NULL,
           PRIMARY KEY (date, instrument_id)
         );
@@ -199,6 +201,12 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
           close REAL,
           PRIMARY KEY (symbol, date)
         );
+        CREATE TABLE IF NOT EXISTS fx_rates (
+          currency TEXT PRIMARY KEY,
+          rate REAL NOT NULL,
+          ts TEXT NOT NULL,
+          source TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS settings (
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL
@@ -216,6 +224,19 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
     ):
         if name not in existing_columns:
             conn.execute(f"ALTER TABLE instruments ADD COLUMN {name} {definition}")
+    trade_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(trades)").fetchall()
+    }
+    if "fx_rate" not in trade_columns:
+        conn.execute("ALTER TABLE trades ADD COLUMN fx_rate REAL NOT NULL DEFAULT 1")
+    snapshot_mark_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(snapshot_marks)").fetchall()
+    }
+    if "fx_rate" not in snapshot_mark_columns:
+        conn.execute(
+            "ALTER TABLE snapshot_marks ADD COLUMN fx_rate REAL NOT NULL DEFAULT 1"
+        )
     lp_columns = {
         row["name"] for row in conn.execute("PRAGMA table_info(lps)").fetchall()
     }
@@ -243,6 +264,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         "last_refresh_failures": "[]",
         "last_refresh_at": "",
         "benchmark_symbol": "SPY",
+        "base_currency": "USD",
     }
     conn.executemany(
         "INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",

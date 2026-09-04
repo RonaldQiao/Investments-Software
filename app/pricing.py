@@ -6,7 +6,8 @@ from datetime import UTC, date, datetime, timedelta
 
 import httpx
 
-from .db import set_setting
+from .db import get_setting, set_setting
+from .fx import fx_rate_for
 
 YAHOO_INSTRUMENT_TYPES = {
     "EQUITY": "equity",
@@ -111,6 +112,36 @@ async def fetch_yahoo_meta(symbol: str) -> dict | None:
         return None
 
 
+async def fetch_fx_rates(
+    currencies: list[str], base: str
+) -> dict[str, float | None]:
+    base = str(base or "USD").strip().upper()
+    currencies = sorted(
+        {str(currency).strip().upper() for currency in currencies if currency}
+        - {base}
+    )
+    if not currencies:
+        return {}
+    direct_symbols = {currency: f"{currency}{base}=X" for currency in currencies}
+    direct = await fetch_yahoo(list(direct_symbols.values()))
+    missing = [currency for currency in currencies if direct.get(direct_symbols[currency]) is None]
+    inverse_symbols = {currency: f"{base}{currency}=X" for currency in missing}
+    inverse = await fetch_yahoo(list(inverse_symbols.values())) if inverse_symbols else {}
+    rates = {}
+    for currency in currencies:
+        direct_rate = direct.get(direct_symbols[currency])
+        if direct_rate is not None:
+            rates[currency] = float(direct_rate)
+            continue
+        inverse_rate = inverse.get(inverse_symbols.get(currency))
+        rates[currency] = (
+            1 / float(inverse_rate)
+            if inverse_rate not in (None, 0)
+            else None
+        )
+    return rates
+
+
 async def fetch_benchmark_history(symbol: str, range_: str = "5d") -> dict[str, float | None]:
     if not symbol:
         return {}
@@ -194,6 +225,24 @@ async def price_instrument(conn, instrument_id: int) -> float | None:
     return price
 
 
+async def refresh_fx_rate(conn, currency: str) -> float | None:
+    currency = str(currency or "").strip().upper()
+    base = str(get_setting(conn, "base_currency", "USD") or "USD").strip().upper()
+    existing = fx_rate_for(conn, currency)
+    if currency == base or existing is not None:
+        return existing
+    rate = (await fetch_fx_rates([currency], base)).get(currency)
+    if rate is not None:
+        conn.execute(
+            "INSERT INTO fx_rates(currency,rate,ts,source) VALUES (?,?,?,'yahoo') "
+            "ON CONFLICT(currency) DO UPDATE SET rate=excluded.rate,ts=excluded.ts,"
+            "source=excluded.source",
+            (currency, rate, datetime.now(UTC).isoformat()),
+        )
+        conn.commit()
+    return rate
+
+
 async def refresh_prices(conn) -> list[str]:
     rows = conn.execute(
         "SELECT id,symbol,yahoo_symbol,asset_class,underlying,expiry,strike,option_type "
@@ -210,6 +259,28 @@ async def refresh_prices(conn) -> list[str]:
             failed.append(symbol)
             continue
         _upsert_price(conn, row["id"], price, now)
+    base = str(get_setting(conn, "base_currency", "USD") or "USD").strip().upper()
+    currencies = []
+    for row in conn.execute(
+        "SELECT DISTINCT currency FROM instruments "
+        "WHERE UPPER(currency) != ? AND pricing_source != 'manual'",
+        (base,),
+    ).fetchall():
+        currency = str(row["currency"]).upper()
+        existing = conn.execute(
+            "SELECT source FROM fx_rates WHERE currency=?", (currency,)
+        ).fetchone()
+        if existing is None or existing["source"] != "manual":
+            currencies.append(currency)
+    rates = await fetch_fx_rates(currencies, base) if currencies else {}
+    for currency, rate in rates.items():
+        if rate is not None:
+            conn.execute(
+                "INSERT INTO fx_rates(currency,rate,ts,source) VALUES (?,?,?,'yahoo') "
+                "ON CONFLICT(currency) DO UPDATE SET rate=excluded.rate,ts=excluded.ts,"
+                "source=excluded.source",
+                (currency, rate, now),
+            )
     set_setting(conn, "last_refresh_failures", json.dumps(failed))
     set_setting(conn, "last_refresh_at", now)
     conn.commit()

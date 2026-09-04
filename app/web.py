@@ -18,6 +18,7 @@ templates = Jinja2Templates(directory=ROOT / "templates")
 def context(request: Request, **kwargs):
     conn = get_conn()
     kwargs.setdefault("fund_name", get_setting(conn, "fund_name", "Ledger"))
+    kwargs.setdefault("base_currency", get_setting(conn, "base_currency", "USD"))
     conn.close()
     funds = list_funds()
     kwargs.setdefault("funds", funds)

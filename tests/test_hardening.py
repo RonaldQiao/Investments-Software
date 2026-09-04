@@ -145,7 +145,7 @@ def test_trade_csv_round_trip_and_edit_warning(client, tmp_path):
     )
     exported = client.get("/trades.csv")
     assert exported.status_code == 200
-    assert exported.text.splitlines()[0] == "ts,symbol,side,quantity,price,fees,notes"
+    assert exported.text.splitlines()[0] == "ts,symbol,side,quantity,price,fees,fx_rate,notes"
     original_positions = client.get("/api/portfolio").json()["positions"]
     from app import db
     from app.main import app

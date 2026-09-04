@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,7 @@ def settings_page(request: Request):
             ("borrow_rate", "0.05"),
             ("snapshot_enabled", "1"),
             ("benchmark_symbol", "SPY"),
+            ("base_currency", "USD"),
         )
     }
     job_logs = row_dicts(
@@ -31,8 +32,26 @@ def settings_page(request: Request):
             "SELECT ts,job,status,detail FROM job_log ORDER BY id DESC LIMIT 10"
         )
     )
+    base_currency = str(settings["base_currency"]).upper()
+    fx_currencies = row_dicts(
+        conn.execute(
+            "SELECT i.currency,fx.rate,fx.ts,fx.source "
+            "FROM instruments i LEFT JOIN fx_rates fx "
+            "ON fx.currency=UPPER(i.currency) "
+            "GROUP BY UPPER(i.currency) ORDER BY UPPER(i.currency)"
+        )
+    )
+    for row in fx_currencies:
+        if row["currency"].upper() == base_currency:
+            row.update(rate=1.0, ts=None, source="base")
     conn.close()
-    return render(request, "settings.html", settings=settings, job_logs=job_logs)
+    return render(
+        request,
+        "settings.html",
+        settings=settings,
+        job_logs=job_logs,
+        fx_currencies=fx_currencies,
+    )
 
 
 
@@ -78,12 +97,49 @@ def save_settings(
     borrow_rate: float = Form(0.05),
     snapshot_enabled: str = Form("0"),
     benchmark_symbol: str = Form("SPY"),
+    base_currency: str = Form("USD"),
 ):
+    base_currency = base_currency.strip().upper()
+    if len(base_currency) != 3 or not base_currency.isalpha():
+        return flash_redirect("/settings", "error", "Base currency must be 3 letters")
     conn = get_conn()
     set_setting(conn, "fund_name", fund_name.strip() or "Ledger")
     set_setting(conn, "leverage", min(5.0, max(1.0, leverage)))
     set_setting(conn, "borrow_rate", borrow_rate)
     set_setting(conn, "snapshot_enabled", "1" if snapshot_enabled == "1" else "0")
     set_setting(conn, "benchmark_symbol", benchmark_symbol.strip().upper())
+    set_setting(conn, "base_currency", base_currency)
+    conn.close()
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/fx")
+def save_fx_rate(currency: str = Form(...), rate: float = Form(...)):
+    currency = currency.strip().upper()
+    conn = get_conn()
+    base = str(get_setting(conn, "base_currency", "USD")).upper()
+    if len(currency) != 3 or not currency.isalpha() or currency == base or rate <= 0:
+        conn.close()
+        return flash_redirect("/settings", "error", "Invalid FX rate")
+    conn.execute(
+        "INSERT INTO fx_rates(currency,rate,ts,source) VALUES (?,?,?,'manual') "
+        "ON CONFLICT(currency) DO UPDATE SET rate=excluded.rate,ts=excluded.ts,"
+        "source='manual'",
+        (currency, rate, datetime.now(UTC).isoformat()),
+    )
+    conn.commit()
+    conn.close()
+    return RedirectResponse("/settings", status_code=303)
+
+
+@router.post("/settings/fx/clear")
+async def clear_fx_rate(currency: str = Form(...)):
+    from ..pricing import refresh_fx_rate
+
+    conn = get_conn()
+    currency = currency.strip().upper()
+    conn.execute("DELETE FROM fx_rates WHERE currency=?", (currency,))
+    conn.commit()
+    await refresh_fx_rate(conn, currency)
     conn.close()
     return RedirectResponse("/settings", status_code=303)

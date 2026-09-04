@@ -50,9 +50,9 @@ def attribution(conn, start_date, end_date):
     }
     marks_by_date = {
         snapshot["date"]: {
-            row["instrument_id"]: float(row["mark"])
+            row["instrument_id"]: (float(row["mark"]), float(row["fx_rate"]))
             for row in conn.execute(
-                "SELECT instrument_id,mark FROM snapshot_marks WHERE date=?",
+                "SELECT instrument_id,mark,fx_rate FROM snapshot_marks WHERE date=?",
                 (snapshot["date"],),
             ).fetchall()
         }
@@ -60,7 +60,7 @@ def attribution(conn, start_date, end_date):
     }
     trades = []
     for row in conn.execute(
-        "SELECT t.id,t.instrument_id,t.ts,t.side,t.quantity,t.price,t.fees,"
+        "SELECT t.id,t.instrument_id,t.ts,t.side,t.quantity,t.price,t.fees,t.fx_rate,"
         "i.multiplier FROM trades t JOIN instruments i ON i.id=t.instrument_id "
         "ORDER BY t.ts,t.id"
     ).fetchall():
@@ -104,11 +104,13 @@ def attribution(conn, start_date, end_date):
             instrument = instruments.get(instrument_id)
             if not instrument or instrument_id not in current_marks:
                 continue
-            mark = current_marks[instrument_id]
+            mark, mark_fx = current_marks[instrument_id]
             multiplier = float(instrument["multiplier"])
             previous_mark = previous_marks.get(instrument_id)
             day_pnl = (
-                quantities[instrument_id] * (mark - previous_mark) * multiplier
+                quantities[instrument_id]
+                * (mark * mark_fx - previous_mark[0] * previous_mark[1])
+                * multiplier
                 if previous_mark is not None
                 else 0.0
             )
@@ -116,9 +118,12 @@ def attribution(conn, start_date, end_date):
                 if trade["instrument_id"] == instrument_id:
                     day_pnl += (
                         trade["signed_qty"]
-                        * (mark - float(trade["price"]))
+                        * (
+                            mark * mark_fx
+                            - float(trade["price"]) * float(trade["fx_rate"] or 1)
+                        )
                         * multiplier
-                        - float(trade["fees"] or 0)
+                        - float(trade["fees"] or 0) * float(trade["fx_rate"] or 1)
                     )
             if (
                 instrument_id not in previous_marks

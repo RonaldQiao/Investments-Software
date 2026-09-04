@@ -45,6 +45,10 @@ The Positions Add instrument form supports optional LONG/SHORT opening fields
 creation, and `/api/lookup?symbol=NBIS` provides Yahoo symbol metadata and a
 current price for autofill.
 
+## Currencies
+
+Settings defines the three-letter accounting base currency (USD by default). Foreign-currency positions use Yahoo FX rates or a manual override; each trade records the base-per-local `fx_rate` used for its cash and P&L accounting.
+
 ## Multiple funds
 
 Each fund is a separate SQLite file. Use the header selector or Settings →

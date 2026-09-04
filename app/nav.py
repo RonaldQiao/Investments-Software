@@ -10,6 +10,7 @@ from itertools import pairwise
 
 from .benchmark import beta, pair_returns
 from .db import get_setting, set_setting
+from .fx import fx_rate_for
 from .positions import build_positions, cash_from_trades
 from .pricing import fetch_benchmark_closes, refresh_prices, yahoo_symbol_for
 
@@ -71,8 +72,15 @@ def compute_portfolio(conn, mark_overrides=None):
             mark = None
         calculation_mark = mark if mark is not None else 0.0
         mult = float(instrument["multiplier"])
-        market_value = pos.qty * calculation_mark * mult
-        unrealized = (calculation_mark - pos.avg_price) * pos.qty * mult
+        fx_rate = fx_rate_for(conn, instrument["currency"])
+        fx_missing = fx_rate is None
+        market_value_local = pos.qty * calculation_mark * mult
+        market_value = market_value_local * (fx_rate or 0)
+        unrealized = (
+            (calculation_mark * (fx_rate or 0) - pos.avg_price * pos.avg_fx)
+            * pos.qty
+            * mult
+        )
         if market_value >= 0:
             gross_long += market_value
         else:
@@ -84,6 +92,9 @@ def compute_portfolio(conn, mark_overrides=None):
                 "name": instrument["name"],
                 "asset_class": instrument["asset_class"],
                 "currency": instrument["currency"],
+                "fx_rate": fx_rate,
+                "fx_missing": fx_missing,
+                "market_value_local": market_value_local,
                 "multiplier": mult,
                 "pricing_source": instrument["pricing_source"],
                 "notes": instrument["notes"] or "",
@@ -206,7 +217,10 @@ def _resolve_mark(conn, instrument, previous_marks, failed_symbols, fallback_pri
         if mark is not None and not failed:
             return float(mark), "yahoo"
     if instrument_id in previous_marks:
-        return float(previous_marks[instrument_id]), "snapshot"
+        previous_mark = previous_marks[instrument_id]
+        if isinstance(previous_mark, tuple):
+            previous_mark = previous_mark[0]
+        return float(previous_mark), "snapshot"
     return float(fallback_price), "fallback"
 
 
@@ -224,12 +238,14 @@ def take_snapshot(
     live_portfolio = compute_portfolio(conn)
     previous_marks = {}
     for row in conn.execute(
-            "SELECT sm.instrument_id,sm.mark FROM snapshot_marks sm "
+            "SELECT sm.instrument_id,sm.mark,sm.fx_rate FROM snapshot_marks sm "
             "JOIN nav_snapshots ns ON ns.date=sm.date "
             "WHERE ns.date<? ORDER BY ns.date DESC",
             (snapshot_date.isoformat(),),
         ).fetchall():
-        previous_marks.setdefault(row["instrument_id"], row["mark"])
+        previous_marks.setdefault(
+            row["instrument_id"], (row["mark"], row["fx_rate"])
+        )
     try:
         failed_symbols = set(json.loads(get_setting(conn, "last_refresh_failures", "[]") or "[]"))
     except (TypeError, json.JSONDecodeError):
@@ -245,8 +261,16 @@ def take_snapshot(
             position["avg_price"],
         )
         mark_overrides[position["instrument_id"]] = mark
-        snapshot_mark_rows.append((position["instrument_id"], mark, mark_source))
-    marked_instruments = {instrument_id for instrument_id, _, _ in snapshot_mark_rows}
+        if not position["fx_missing"]:
+            snapshot_mark_rows.append(
+                (
+                    position["instrument_id"],
+                    mark,
+                    mark_source,
+                    position["fx_rate"],
+                )
+            )
+    marked_instruments = {row[0] for row in snapshot_mark_rows}
     traded_today = conn.execute(
         "SELECT DISTINCT instrument_id FROM trades WHERE substr(ts,1,10)=?",
         (snapshot_date.isoformat(),),
@@ -273,7 +297,11 @@ def take_snapshot(
             failed_symbols,
             fallback_price,
         )
-        snapshot_mark_rows.append((instrument_id, mark, mark_source))
+        instrument_fx = fx_rate_for(conn, instrument["currency"])
+        if instrument_fx is not None:
+            snapshot_mark_rows.append(
+                (instrument_id, mark, mark_source, instrument_fx)
+            )
     portfolio = compute_portfolio(conn, mark_overrides)
     gross_nav = float(portfolio["nav"])
     liability = float(get_setting(conn, "fee_liability", 0) or 0)
@@ -371,8 +399,12 @@ def take_snapshot(
     )
     conn.execute("DELETE FROM snapshot_marks WHERE date=?", (values["date"],))
     conn.executemany(
-        "INSERT INTO snapshot_marks(date,instrument_id,mark,source) VALUES (?,?,?,?)",
-        [(values["date"], instrument_id, mark, mark_source) for instrument_id, mark, mark_source in snapshot_mark_rows],
+        "INSERT INTO snapshot_marks(date,instrument_id,mark,source,fx_rate) "
+        "VALUES (?,?,?,?,?)",
+        [
+            (values["date"], instrument_id, mark, mark_source, fx_rate)
+            for instrument_id, mark, mark_source, fx_rate in snapshot_mark_rows
+        ],
     )
     benchmark_symbol = str(get_setting(conn, "benchmark_symbol", "") or "").strip().upper()
     if benchmark_symbol and fetch_benchmark:

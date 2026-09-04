@@ -3,9 +3,16 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from ..db import get_conn
+from ..db import get_conn, get_setting
+from ..fx import fx_rate_for, trade_fx_rate
 from ..nav import compute_portfolio, history_series
-from ..pricing import fetch_yahoo_meta, price_instrument, refresh_prices
+from ..pricing import (
+    fetch_fx_rates,
+    fetch_yahoo_meta,
+    price_instrument,
+    refresh_fx_rate,
+    refresh_prices,
+)
 from ..web import row_dicts
 
 router = APIRouter()
@@ -19,6 +26,22 @@ async def instrument_lookup(symbol: str = ""):
     result = await fetch_yahoo_meta(symbol)
     if result is None:
         return JSONResponse({"error": "not found"}, status_code=404)
+    conn = get_conn()
+    base = str(get_setting(conn, "base_currency", "USD") or "USD").upper()
+    currency = str(result.get("currency") or base).upper()
+    rate = fx_rate_for(conn, currency)
+    if rate is None:
+        rate = (await fetch_fx_rates([currency], base)).get(currency)
+    if rate is not None and currency != base:
+        conn.execute(
+            "INSERT INTO fx_rates(currency,rate,ts,source) VALUES (?,?,?,'yahoo') "
+            "ON CONFLICT(currency) DO UPDATE SET rate=excluded.rate,ts=excluded.ts,"
+            "source=excluded.source",
+            (currency, rate, datetime.now(UTC).isoformat()),
+        )
+        conn.commit()
+    conn.close()
+    result["fx_rate"] = 1.0 if currency == base else rate
     return result
 
 
@@ -82,7 +105,7 @@ async def instruments_create_api(request: Request):
         payload.get("symbol", "").strip().upper(),
         payload.get("name", "").strip(),
         payload.get("asset_class", "other"),
-        payload.get("currency", "USD"),
+        str(payload.get("currency", "USD")).strip().upper(),
         float(payload.get("multiplier", 1)),
         payload.get("pricing_source", "yahoo"),
         payload.get("yahoo_symbol") or None,
@@ -102,8 +125,8 @@ async def instruments_create_api(request: Request):
     )
     if quantity is not None:
         conn.execute(
-            "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,fx_rate,notes) "
+            "VALUES (?,?,?,?,?,?,?,?)",
             (
                 cursor.lastrowid,
                 datetime.now(UTC).isoformat(),
@@ -111,10 +134,12 @@ async def instruments_create_api(request: Request):
                 quantity,
                 avg_price,
                 fees,
+                trade_fx_rate(conn, cursor.lastrowid, payload.get("fx_rate")),
                 "Opening position",
             ),
         )
     conn.commit()
+    await refresh_fx_rate(conn, str(payload.get("currency", "USD")).upper())
     price = await price_instrument(conn, cursor.lastrowid)
     row = conn.execute("SELECT * FROM instruments WHERE id=?", (cursor.lastrowid,)).fetchone()
     conn.close()
@@ -165,6 +190,8 @@ async def instruments_update_api(instrument_id: int, request: Request):
         (*allowed.values(), instrument_id),
     )
     conn.commit()
+    if "currency" in allowed:
+        await refresh_fx_rate(conn, str(allowed["currency"]).upper())
     row = conn.execute(
         "SELECT * FROM instruments WHERE id=?", (instrument_id,)
     ).fetchone()
@@ -185,7 +212,8 @@ async def trades_create_api(request: Request):
     payload = await request.json()
     conn = get_conn()
     cursor = conn.execute(
-        "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) VALUES (?,?,?,?,?,?,?)",
+        "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,fx_rate,notes) "
+        "VALUES (?,?,?,?,?,?,?,?)",
         (
             payload["instrument_id"],
             payload.get("ts") or datetime.now(UTC).isoformat(),
@@ -193,6 +221,7 @@ async def trades_create_api(request: Request):
             payload["quantity"],
             payload["price"],
             payload.get("fees", 0),
+            trade_fx_rate(conn, payload["instrument_id"], payload.get("fx_rate")),
             payload.get("notes", ""),
         ),
     )
@@ -217,7 +246,16 @@ async def trades_update_api(trade_id: int, request: Request):
     payload = await request.json()
     allowed = {
         key: payload[key]
-        for key in ("instrument_id", "ts", "side", "quantity", "price", "fees", "notes")
+        for key in (
+            "instrument_id",
+            "ts",
+            "side",
+            "quantity",
+            "price",
+            "fees",
+            "fx_rate",
+            "notes",
+        )
         if key in payload
     }
     if not allowed:

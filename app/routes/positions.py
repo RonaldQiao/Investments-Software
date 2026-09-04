@@ -4,10 +4,11 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from ..db import get_conn
+from ..db import get_conn, get_setting
+from ..fx import trade_fx_rate
 from ..nav import compute_portfolio
 from ..positions import build_positions
-from ..pricing import price_instrument
+from ..pricing import price_instrument, refresh_fx_rate
 from ..web import flash_redirect, render, row_dicts
 
 router = APIRouter()
@@ -28,6 +29,8 @@ async def add_instrument(
     name: str = Form(...),
     asset_class: str = Form(...),
     currency: str = Form("USD"),
+    currency_other: str = Form(""),
+    fx_rate: str = Form(""),
     multiplier: float = Form(1),
     pricing_source: str = Form("yahoo"),
     yahoo_symbol: str = Form(""),
@@ -42,6 +45,7 @@ async def add_instrument(
     avg_price: str = Form(""),
     fees: str = Form(""),
 ):
+    currency = currency_other.strip().upper() if currency == "other" else currency.strip().upper()
     side = side.strip().upper()
     try:
         quantity_value = float(quantity) if quantity.strip() else None
@@ -68,7 +72,7 @@ async def add_instrument(
                 symbol.strip().upper(),
                 name.strip(),
                 asset_class,
-                currency.strip().upper(),
+                currency,
                 multiplier,
                 pricing_source,
                 yahoo_symbol.strip() or None,
@@ -83,8 +87,8 @@ async def add_instrument(
         )
         if quantity_value is not None:
             conn.execute(
-                "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) "
-                "VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,fx_rate,notes) "
+                "VALUES (?,?,?,?,?,?,?,?)",
                 (
                     cursor.lastrowid,
                     datetime.now(UTC).isoformat(),
@@ -92,6 +96,7 @@ async def add_instrument(
                     quantity_value,
                     avg_price_value,
                     fees_value,
+                    trade_fx_rate(conn, cursor.lastrowid, fx_rate),
                     "Opening position",
                 ),
             )
@@ -101,6 +106,9 @@ async def add_instrument(
         conn.close()
         return flash_redirect("/positions", "error", str(exc))
     message = "Instrument added with opening position" if quantity_value is not None else "Instrument added"
+    base_currency = str(get_setting(conn, "base_currency", "USD")).upper()
+    if currency != base_currency:
+        await refresh_fx_rate(conn, currency)
     if pricing_source == "yahoo":
         price = await price_instrument(conn, cursor.lastrowid)
         message += f" · priced {price:.2f}" if price is not None else "; no Yahoo price yet"
@@ -113,6 +121,8 @@ async def edit_instrument(
     instrument_id: int,
     name: str = Form(...),
     asset_class: str = Form(...),
+    currency: str = Form("USD"),
+    currency_other: str = Form(""),
     multiplier: float = Form(...),
     pricing_source: str = Form(...),
     yahoo_symbol: str = Form(""),
@@ -122,6 +132,7 @@ async def edit_instrument(
     strike: str = Form(""),
     option_type: str = Form(""),
 ):
+    currency = currency_other.strip().upper() if currency == "other" else currency.strip().upper()
     conn = get_conn()
     instrument = conn.execute(
         "SELECT * FROM instruments WHERE id=?", (instrument_id,)
@@ -147,11 +158,12 @@ async def edit_instrument(
         )
     )
     conn.execute(
-        "UPDATE instruments SET name=?,asset_class=?,multiplier=?,pricing_source=?,"
+        "UPDATE instruments SET name=?,asset_class=?,currency=?,multiplier=?,pricing_source=?,"
         "yahoo_symbol=?,notes=?,underlying=?,expiry=?,strike=?,option_type=? WHERE id=?",
         (
             name.strip(),
             asset_class,
+            currency,
             multiplier,
             pricing_source,
             yahoo_symbol.strip() or None,
@@ -164,6 +176,9 @@ async def edit_instrument(
         ),
     )
     conn.commit()
+    base_currency = str(get_setting(conn, "base_currency", "USD")).upper()
+    if currency != base_currency:
+        await refresh_fx_rate(conn, currency)
     message = "Instrument updated"
     if float(multiplier) != float(instrument["multiplier"]) and abs(float(position)) > 1e-12:
         message += "; multiplier changed; NAV recomputed"
@@ -201,14 +216,15 @@ def set_position(
     adjustment = target_qty - current_qty
     if adjustment:
         conn.execute(
-            "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) "
-            "VALUES (?,?,?,?,?,0,'Set position')",
+            "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,fx_rate,notes) "
+            "VALUES (?,?,?,?,?,0,?,'Set position')",
             (
                 instrument_id,
                 datetime.now(UTC).isoformat(),
                 "BUY" if adjustment > 0 else "SELL",
                 abs(adjustment),
                 price,
+                trade_fx_rate(conn, instrument_id),
             ),
         )
         conn.commit()

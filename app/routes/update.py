@@ -7,6 +7,7 @@ from fastapi.responses import HTMLResponse
 
 from ..blotter import parse_blotter
 from ..db import get_conn
+from ..fx import trade_fx_rate
 from ..nav import compute_portfolio, take_snapshot
 from ..pricing import refresh_prices
 from ..web import flash_redirect, render
@@ -83,8 +84,8 @@ async def update_blotter(request: Request):
         timestamp = datetime.now(UTC).isoformat()
         conn.execute("BEGIN")
         conn.executemany(
-            "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,notes) "
-            "VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,fx_rate,notes) "
+            "VALUES (?,?,?,?,?,?,?,?)",
             [
                 (
                     instruments[trade["symbol"]],
@@ -93,6 +94,7 @@ async def update_blotter(request: Request):
                     trade["quantity"],
                     trade["price"],
                     trade["fees"],
+                    trade_fx_rate(conn, instruments[trade["symbol"]]),
                     "Daily update blotter",
                 )
                 for trade in pending
