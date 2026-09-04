@@ -18,6 +18,22 @@ from ..web import row_dicts
 router = APIRouter()
 
 
+def _currency_value(currency, other=""):
+    value = str(other if currency == "other" else currency).strip().upper()
+    if len(value) != 3 or not value.isalpha():
+        raise ValueError("Enter a 3-letter currency code")
+    return value
+
+
+def _positive_fx(value):
+    if value in (None, ""):
+        return None
+    result = float(value)
+    if result <= 0:
+        raise ValueError("FX rate must be positive")
+    return result
+
+
 @router.get("/api/lookup")
 async def instrument_lookup(symbol: str = ""):
     symbol = symbol.strip().upper()
@@ -83,13 +99,18 @@ async def instruments_create_api(request: Request):
     payload = await request.json()
     side = str(payload.get("side", "LONG")).strip().upper()
     try:
+        currency = _currency_value(payload.get("currency", "USD"), payload.get("currency_other", ""))
+        provided_fx = _positive_fx(payload.get("fx_rate"))
+        price_scale = float(payload.get("price_scale", 1) or 1)
+        if price_scale <= 0:
+            raise ValueError("Price scale must be positive")
         quantity = float(payload["quantity"]) if payload.get("quantity") not in (None, "") else None
         avg_price = (
             float(payload["avg_price"]) if payload.get("avg_price") not in (None, "") else None
         )
         fees = float(payload.get("fees", 0) or 0)
-    except (TypeError, ValueError):
-        return JSONResponse({"error": "invalid opening position"}, status_code=400)
+    except (TypeError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     if side not in {"LONG", "SHORT"}:
         return JSONResponse({"error": "invalid side"}, status_code=400)
     if quantity is not None and quantity <= 0:
@@ -99,18 +120,27 @@ async def instruments_create_api(request: Request):
     if avg_price is not None and avg_price < 0:
         return JSONResponse({"error": "avg_price cannot be negative"}, status_code=400)
     conn = get_conn()
+    base = str(get_setting(conn, "base_currency", "USD")).upper()
+    if currency != base:
+        await refresh_fx_rate(conn, currency)
+        if quantity is not None and provided_fx is None and fx_rate_for(conn, currency) is None:
+            conn.close()
+            return JSONResponse(
+                {"error": f"No FX rate for {currency} — enter one"}, status_code=400
+            )
     manual_mark = payload.get("manual_mark")
     manual_mark_at = datetime.now(UTC).isoformat() if manual_mark not in (None, "") else None
     fields = (
         payload.get("symbol", "").strip().upper(),
         payload.get("name", "").strip(),
         payload.get("asset_class", "other"),
-        str(payload.get("currency", "USD")).strip().upper(),
+        currency,
         float(payload.get("multiplier", 1)),
         payload.get("pricing_source", "yahoo"),
         payload.get("yahoo_symbol") or None,
         manual_mark,
         manual_mark_at,
+        price_scale,
         payload.get("notes", ""),
         payload.get("underlying") or None,
         payload.get("expiry") or None,
@@ -119,8 +149,8 @@ async def instruments_create_api(request: Request):
     )
     cursor = conn.execute(
         "INSERT INTO instruments(symbol,name,asset_class,currency,multiplier,pricing_source,"
-        "yahoo_symbol,manual_mark,manual_mark_at,notes,underlying,expiry,strike,option_type) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "yahoo_symbol,manual_mark,manual_mark_at,price_scale,notes,underlying,expiry,"
+        "strike,option_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         fields,
     )
     if quantity is not None:
@@ -134,12 +164,11 @@ async def instruments_create_api(request: Request):
                 quantity,
                 avg_price,
                 fees,
-                trade_fx_rate(conn, cursor.lastrowid, payload.get("fx_rate")),
+                trade_fx_rate(conn, cursor.lastrowid, provided_fx),
                 "Opening position",
             ),
         )
     conn.commit()
-    await refresh_fx_rate(conn, str(payload.get("currency", "USD")).upper())
     price = await price_instrument(conn, cursor.lastrowid)
     row = conn.execute("SELECT * FROM instruments WHERE id=?", (cursor.lastrowid,)).fetchone()
     conn.close()
@@ -171,6 +200,7 @@ async def instruments_update_api(instrument_id: int, request: Request):
             "multiplier",
             "pricing_source",
             "yahoo_symbol",
+            "price_scale",
             "manual_mark",
             "manual_mark_at",
             "notes",
@@ -183,6 +213,20 @@ async def instruments_update_api(instrument_id: int, request: Request):
     }
     if not allowed:
         return JSONResponse({"error": "no fields supplied"}, status_code=400)
+    if "currency" in allowed:
+        try:
+            allowed["currency"] = _currency_value(
+                allowed["currency"], payload.get("currency_other", "")
+            )
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+    if "price_scale" in allowed:
+        try:
+            allowed["price_scale"] = float(allowed["price_scale"])
+            if allowed["price_scale"] <= 0:
+                raise ValueError("Price scale must be positive")
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
     conn = get_conn()
     assignments = ", ".join(f"{key}=?" for key in allowed)
     conn.execute(
@@ -210,6 +254,10 @@ def trades_api():
 @router.post("/api/trades")
 async def trades_create_api(request: Request):
     payload = await request.json()
+    try:
+        provided_fx = _positive_fx(payload.get("fx_rate"))
+    except (TypeError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     conn = get_conn()
     cursor = conn.execute(
         "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,fx_rate,notes) "
@@ -221,7 +269,7 @@ async def trades_create_api(request: Request):
             payload["quantity"],
             payload["price"],
             payload.get("fees", 0),
-            trade_fx_rate(conn, payload["instrument_id"], payload.get("fx_rate")),
+            trade_fx_rate(conn, payload["instrument_id"], provided_fx),
             payload.get("notes", ""),
         ),
     )
@@ -260,6 +308,11 @@ async def trades_update_api(trade_id: int, request: Request):
     }
     if not allowed:
         return JSONResponse({"error": "no fields supplied"}, status_code=400)
+    if "fx_rate" in allowed:
+        try:
+            allowed["fx_rate"] = _positive_fx(allowed["fx_rate"])
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
     conn = get_conn()
     assignments = ", ".join(f"{key}=?" for key in allowed)
     conn.execute(

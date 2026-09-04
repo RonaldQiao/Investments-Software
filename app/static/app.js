@@ -12,6 +12,7 @@ if(addInstrument){
   const yahooSymbol=addInstrument.elements.yahoo_symbol;
   const avgPrice=addInstrument.elements.avg_price;
   const fxRate=addInstrument.elements.fx_rate;
+  const priceScale=addInstrument.elements.price_scale;
   const status=document.querySelector("#lookup-status");
   [assetClass,currency].forEach(field=>field.addEventListener("input",()=>{field.dataset.touched="1";}));
   let lastLookup="";
@@ -40,11 +41,13 @@ if(addInstrument){
         const option=[...currency.options].find(item=>item.value===meta.currency);
         currency.value=option?meta.currency:"other";
         if(currency.value==="other"&&currencyOther)currencyOther.value=meta.currency;
+        currency.dispatchEvent(new Event("change"));
       }
-      if(fxRate&&!fxRate.value&&meta.fx_rate!=null)fxRate.value=meta.fx_rate;
+      if(fxRate&&!fxRate.value&&meta.fx_rate!=null&&Number(meta.fx_rate)!==1)fxRate.value=meta.fx_rate;
+      if(priceScale)priceScale.value=meta.price_scale||1;
       if(!yahooSymbol.value){yahooSymbol.value=meta.symbol;autoYahooSymbol=meta.symbol;}
       if(meta.price!=null){
-        const price=Number(meta.price);
+        const price=Number(meta.price)*(Number(meta.price_scale)||1);
         avgPrice.placeholder=price.toFixed(2);
         autoPricePlaceholder=avgPrice.placeholder;
         status.textContent=`Yahoo · ${price.toFixed(2)} ${meta.currency}`;

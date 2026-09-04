@@ -9,7 +9,7 @@ from app import db
 from app.fx import fx_rate_for
 from app.nav import compute_portfolio, take_snapshot
 from app.positions import build_positions
-from app.pricing import fetch_fx_rates, refresh_prices
+from app.pricing import fetch_fx_rates, fetch_yahoo_meta, price_instrument, refresh_prices
 
 
 @pytest.fixture()
@@ -93,6 +93,8 @@ def test_realized_fx_pnl_and_missing_fx(tmp_path, monkeypatch, fx_client):
     portfolio = compute_portfolio(conn)
     row = next(row for row in portfolio["positions"] if row["instrument_id"] == missing)
     assert row["fx_missing"] is True
+    assert row["market_value"] == 0
+    assert row["unrealized"] == 0
     assert portfolio["nav"] == pytest.approx(nav_before_missing - 10)
     conn.close()
     assert fx_client.get("/positions").status_code == 200
@@ -247,5 +249,142 @@ def test_fx_columns_migrate_on_old_schema(tmp_path):
     }
     assert "fx_rate" in trade_columns
     assert "fx_rate" in mark_columns
+    assert "price_scale" in {
+        row["name"] for row in conn.execute("PRAGMA table_info(instruments)")
+    }
     assert conn.execute("SELECT fx_rate FROM trades").fetchone()["fx_rate"] == 1
+    conn.close()
+
+
+def test_add_foreign_opening_trade_uses_refreshed_fx(fx_client, monkeypatch):
+    async def fake_fetch(symbols):
+        return {"NOKUSD=X": 0.1076} if symbols == ["NOKUSD=X"] else {}
+
+    monkeypatch.setattr("app.pricing.fetch_yahoo", fake_fetch)
+    response = fx_client.post(
+        "/instruments",
+        data={
+            "symbol": "NOKB",
+            "name": "Norwegian bond",
+            "asset_class": "bond",
+            "currency": "NOK",
+            "pricing_source": "manual",
+            "manual_mark": "100",
+            "quantity": "100",
+            "avg_price": "100",
+        },
+    )
+    assert response.status_code == 200
+    conn = db.get_conn()
+    trade = conn.execute(
+        "SELECT fx_rate FROM trades t JOIN instruments i ON i.id=t.instrument_id "
+        "WHERE i.symbol='NOKB'"
+    ).fetchone()
+    assert trade["fx_rate"] == pytest.approx(0.1076)
+    assert compute_portfolio(conn)["cash"] == pytest.approx(-100 * 100 * 0.1076)
+    conn.close()
+
+
+def test_blank_other_currency_is_rejected(fx_client):
+    response = fx_client.post(
+        "/instruments",
+        data={
+            "symbol": "BAD",
+            "name": "Bad currency",
+            "asset_class": "bond",
+            "currency": "other",
+            "currency_other": "",
+        },
+    )
+    assert response.status_code == 200
+    assert "Enter a 3-letter currency code" in response.text
+    conn = db.get_conn()
+    assert conn.execute("SELECT COUNT(*) FROM instruments").fetchone()[0] == 0
+    conn.close()
+
+
+def test_zero_fx_is_rejected_on_add_and_trade(fx_client):
+    add = fx_client.post(
+        "/instruments",
+        data={
+            "symbol": "ZERO",
+            "name": "Zero FX",
+            "asset_class": "equity",
+            "currency": "EUR",
+            "fx_rate": "0",
+        },
+    )
+    assert "FX rate must be positive" in add.text
+    conn = db.get_conn()
+    conn.execute(
+        "INSERT INTO instruments(symbol,name,asset_class) VALUES ('USD','USD','equity')"
+    )
+    conn.commit()
+    conn.close()
+    trade = fx_client.post(
+        "/trades",
+        data={
+            "instrument_id": "1",
+            "side": "BUY",
+            "quantity": "1",
+            "price": "10",
+            "fx_rate": "0",
+        },
+    )
+    assert "FX rate must be positive" in trade.text
+
+
+def test_gbpence_meta_and_price_scale(tmp_path, monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "chart": {
+                    "result": [
+                        {
+                            "meta": {
+                                "symbol": "VOD.L",
+                                "shortName": "Vodafone",
+                                "instrumentType": "EQUITY",
+                                "currency": "GBp",
+                                "regularMarketPrice": 500,
+                            }
+                        }
+                    ]
+                }
+            }
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, *args, **kwargs):
+            return Response()
+
+    monkeypatch.setattr("app.pricing.httpx.AsyncClient", Client)
+    meta = asyncio.run(fetch_yahoo_meta("VOD.L"))
+    assert meta["currency"] == "GBP"
+    assert meta["price_scale"] == 0.01
+    db.DB_PATH = tmp_path / "ledger.db"
+    conn = db.get_conn()
+    db.init_db(conn)
+    instrument_id = conn.execute(
+        "INSERT INTO instruments(symbol,name,asset_class,currency,price_scale,"
+        "pricing_source) VALUES ('VOD','Vodafone','equity','GBP',0.01,'yahoo')"
+    ).lastrowid
+
+    async def fake_fetch(symbols):
+        return {"VOD": 500}
+
+    monkeypatch.setattr("app.pricing.fetch_yahoo", fake_fetch)
+    assert asyncio.run(price_instrument(conn, instrument_id)) == pytest.approx(5)
+    assert conn.execute("SELECT price FROM prices").fetchone()["price"] == pytest.approx(5)
     conn.close()

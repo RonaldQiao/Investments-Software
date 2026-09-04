@@ -76,8 +76,8 @@ def compute_portfolio(conn, mark_overrides=None):
         fx_missing = fx_rate is None
         market_value_local = pos.qty * calculation_mark * mult
         market_value = market_value_local * (fx_rate or 0)
-        unrealized = (
-            (calculation_mark * (fx_rate or 0) - pos.avg_price * pos.avg_fx)
+        unrealized = 0.0 if fx_missing else (
+            (calculation_mark * fx_rate - pos.avg_price * pos.avg_fx)
             * pos.qty
             * mult
         )

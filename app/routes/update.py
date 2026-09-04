@@ -83,6 +83,9 @@ async def update_blotter(request: Request):
                 )
         timestamp = datetime.now(UTC).isoformat()
         conn.execute("BEGIN")
+        for trade in pending:
+            if trade.get("fx_rate") is not None and trade["fx_rate"] <= 0:
+                raise ValueError("FX rate must be positive")
         conn.executemany(
             "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,fx_rate,notes) "
             "VALUES (?,?,?,?,?,?,?,?)",
@@ -94,7 +97,9 @@ async def update_blotter(request: Request):
                     trade["quantity"],
                     trade["price"],
                     trade["fees"],
-                    trade_fx_rate(conn, instruments[trade["symbol"]]),
+                    trade_fx_rate(
+                        conn, instruments[trade["symbol"]], trade.get("fx_rate")
+                    ),
                     "Daily update blotter",
                 )
                 for trade in pending

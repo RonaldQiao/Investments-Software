@@ -99,14 +99,24 @@ async def fetch_yahoo_meta(symbol: str) -> dict | None:
             if not yahoo_symbol:
                 return None
             price = meta.get("regularMarketPrice")
+            raw_currency = str(meta.get("currency") or "USD").strip()
+            if raw_currency == "GBp":
+                currency, price_scale = "GBP", 0.01
+            elif raw_currency == "ZAc":
+                currency, price_scale = "ZAR", 0.01
+            elif raw_currency == "ILA":
+                currency, price_scale = "ILS", 0.01
+            else:
+                currency, price_scale = raw_currency.upper(), 1
             return {
                 "symbol": yahoo_symbol,
                 "name": meta.get("shortName") or meta.get("longName") or "",
                 "asset_class": YAHOO_INSTRUMENT_TYPES.get(
                     meta.get("instrumentType"), "other"
                 ),
-                "currency": meta.get("currency") or "USD",
+                "currency": currency,
                 "price": float(price) if price is not None else None,
+                "price_scale": price_scale,
             }
     except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
         return None
@@ -211,7 +221,7 @@ def _upsert_price(conn, instrument_id: int, price: float, now: str) -> None:
 async def price_instrument(conn, instrument_id: int) -> float | None:
     row = conn.execute(
         "SELECT id,symbol,yahoo_symbol,asset_class,underlying,expiry,strike,option_type,"
-        "pricing_source FROM instruments WHERE id=?",
+        "pricing_source,price_scale FROM instruments WHERE id=?",
         (instrument_id,),
     ).fetchone()
     if row is None or row["pricing_source"] != "yahoo":
@@ -220,9 +230,15 @@ async def price_instrument(conn, instrument_id: int) -> float | None:
     price = (await fetch_yahoo([symbol])).get(symbol)
     if price is None:
         return None
-    _upsert_price(conn, instrument_id, price, datetime.now(UTC).isoformat())
+    scaled_price = price * float(row["price_scale"] or 1)
+    _upsert_price(
+        conn,
+        instrument_id,
+        scaled_price,
+        datetime.now(UTC).isoformat(),
+    )
     conn.commit()
-    return price
+    return scaled_price
 
 
 async def refresh_fx_rate(conn, currency: str) -> float | None:
@@ -245,7 +261,8 @@ async def refresh_fx_rate(conn, currency: str) -> float | None:
 
 async def refresh_prices(conn) -> list[str]:
     rows = conn.execute(
-        "SELECT id,symbol,yahoo_symbol,asset_class,underlying,expiry,strike,option_type "
+        "SELECT id,symbol,yahoo_symbol,asset_class,underlying,expiry,strike,option_type,"
+        "price_scale "
         "FROM instruments WHERE pricing_source='yahoo'"
     ).fetchall()
     symbols = [yahoo_symbol_for(row) for row in rows]
@@ -258,7 +275,7 @@ async def refresh_prices(conn) -> list[str]:
         if price is None:
             failed.append(symbol)
             continue
-        _upsert_price(conn, row["id"], price, now)
+        _upsert_price(conn, row["id"], price * float(row["price_scale"] or 1), now)
     base = str(get_setting(conn, "base_currency", "USD") or "USD").strip().upper()
     currencies = []
     for row in conn.execute(

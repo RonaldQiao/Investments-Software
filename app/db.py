@@ -101,6 +101,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
           yahoo_symbol TEXT,
           manual_mark REAL,
           manual_mark_at TEXT,
+          price_scale REAL NOT NULL DEFAULT 1,
           notes TEXT,
           underlying TEXT,
           expiry TEXT,
@@ -221,6 +222,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         ("expiry", "TEXT"),
         ("strike", "REAL"),
         ("option_type", "TEXT CHECK(option_type IN ('C','P'))"),
+        ("price_scale", "REAL NOT NULL DEFAULT 1"),
     ):
         if name not in existing_columns:
             conn.execute(f"ALTER TABLE instruments ADD COLUMN {name} {definition}")

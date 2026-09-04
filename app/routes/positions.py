@@ -5,13 +5,30 @@ from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ..db import get_conn, get_setting
-from ..fx import trade_fx_rate
+from ..fx import fx_rate_for, trade_fx_rate
 from ..nav import compute_portfolio
 from ..positions import build_positions
 from ..pricing import price_instrument, refresh_fx_rate
 from ..web import flash_redirect, render, row_dicts
 
 router = APIRouter()
+
+
+def _normalize_currency(currency: str, other: str) -> str:
+    value = other.strip() if currency == "other" else currency.strip()
+    value = value.upper()
+    if len(value) != 3 or not value.isalpha():
+        raise ValueError("Enter a 3-letter currency code")
+    return value
+
+
+def _optional_positive(value: str) -> float | None:
+    if not value.strip():
+        return None
+    parsed = float(value)
+    if parsed <= 0:
+        raise ValueError("FX rate must be positive")
+    return parsed
 
 @router.get("/positions", response_class=HTMLResponse)
 def positions_page(request: Request):
@@ -44,15 +61,20 @@ async def add_instrument(
     quantity: str = Form(""),
     avg_price: str = Form(""),
     fees: str = Form(""),
+    price_scale: str = Form("1"),
 ):
-    currency = currency_other.strip().upper() if currency == "other" else currency.strip().upper()
-    side = side.strip().upper()
     try:
+        currency = _normalize_currency(currency, currency_other)
+        fx_value = _optional_positive(fx_rate)
+        price_scale_value = float(price_scale)
         quantity_value = float(quantity) if quantity.strip() else None
         avg_price_value = float(avg_price) if avg_price.strip() else None
         fees_value = float(fees) if fees.strip() else 0
-    except (ValueError, TypeError):
-        return flash_redirect("/positions", "error", "Invalid opening position")
+        if price_scale_value <= 0:
+            raise ValueError("Price scale must be positive")
+    except (ValueError, TypeError) as exc:
+        return flash_redirect("/positions", "error", str(exc))
+    side = side.strip().upper()
     if side not in {"LONG", "SHORT"}:
         return flash_redirect("/positions", "error", "Invalid side")
     if quantity_value is not None and quantity_value <= 0:
@@ -63,11 +85,19 @@ async def add_instrument(
         return flash_redirect("/positions", "error", "Avg price cannot be negative")
     conn = get_conn()
     try:
+        base_currency = str(get_setting(conn, "base_currency", "USD")).upper()
+        if currency != base_currency:
+            await refresh_fx_rate(conn, currency)
+            if quantity_value is not None and fx_value is None and fx_rate_for(conn, currency) is None:
+                conn.close()
+                return flash_redirect(
+                    "/positions", "error", f"No FX rate for {currency} — enter one"
+                )
         manual_mark_value = float(manual_mark) if manual_mark.strip() else None
         cursor = conn.execute(
             "INSERT INTO instruments(symbol,name,asset_class,currency,multiplier,pricing_source,"
-            "yahoo_symbol,manual_mark,manual_mark_at,notes,underlying,expiry,strike,option_type) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+          "yahoo_symbol,manual_mark,manual_mark_at,price_scale,notes,underlying,expiry,"
+            "strike,option_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 symbol.strip().upper(),
                 name.strip(),
@@ -78,6 +108,7 @@ async def add_instrument(
                 yahoo_symbol.strip() or None,
                 manual_mark_value,
                 datetime.now(UTC).isoformat() if manual_mark_value is not None else None,
+                price_scale_value,
                 notes.strip(),
                 underlying.strip() or None,
                 expiry.strip() or None,
@@ -96,7 +127,7 @@ async def add_instrument(
                     quantity_value,
                     avg_price_value,
                     fees_value,
-                    trade_fx_rate(conn, cursor.lastrowid, fx_rate),
+                    trade_fx_rate(conn, cursor.lastrowid, fx_value),
                     "Opening position",
                 ),
             )
@@ -106,9 +137,6 @@ async def add_instrument(
         conn.close()
         return flash_redirect("/positions", "error", str(exc))
     message = "Instrument added with opening position" if quantity_value is not None else "Instrument added"
-    base_currency = str(get_setting(conn, "base_currency", "USD")).upper()
-    if currency != base_currency:
-        await refresh_fx_rate(conn, currency)
     if pricing_source == "yahoo":
         price = await price_instrument(conn, cursor.lastrowid)
         message += f" · priced {price:.2f}" if price is not None else "; no Yahoo price yet"
@@ -132,8 +160,12 @@ async def edit_instrument(
     strike: str = Form(""),
     option_type: str = Form(""),
 ):
-    currency = currency_other.strip().upper() if currency == "other" else currency.strip().upper()
     conn = get_conn()
+    try:
+        currency = _normalize_currency(currency, currency_other)
+    except ValueError as exc:
+        conn.close()
+        return flash_redirect("/positions", "error", str(exc))
     instrument = conn.execute(
         "SELECT * FROM instruments WHERE id=?", (instrument_id,)
     ).fetchone()

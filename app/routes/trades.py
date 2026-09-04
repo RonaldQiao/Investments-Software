@@ -12,6 +12,15 @@ from ..web import flash_redirect, render, row_dicts
 
 router = APIRouter()
 
+
+def _trade_fx(value: str) -> float | None:
+    if not value.strip():
+        return None
+    rate = float(value)
+    if rate <= 0:
+        raise ValueError("FX rate must be positive")
+    return rate
+
 @router.get("/trades", response_class=HTMLResponse)
 def trades_page(request: Request):
     conn = get_conn()
@@ -69,20 +78,25 @@ def add_trade(
     notes: str = Form(""),
 ):
     conn = get_conn()
-    conn.execute(
-        "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,fx_rate,notes) "
-        "VALUES (?,?,?,?,?,?,?,?)",
-        (
-            instrument_id,
-            ts or datetime.now(UTC).isoformat(),
-            side,
-            quantity,
-            price,
-            fees,
-            trade_fx_rate(conn, instrument_id, fx_rate),
-            notes,
-        ),
-    )
+    try:
+        provided_fx = _trade_fx(fx_rate)
+        conn.execute(
+            "INSERT INTO trades(instrument_id,ts,side,quantity,price,fees,fx_rate,notes) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (
+                instrument_id,
+                ts or datetime.now(UTC).isoformat(),
+                side,
+                quantity,
+                price,
+                fees,
+                trade_fx_rate(conn, instrument_id, provided_fx),
+                notes,
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        conn.close()
+        return flash_redirect("/trades", "error", str(exc))
     conn.commit()
     conn.close()
     return RedirectResponse("/trades", status_code=303)
@@ -117,7 +131,9 @@ async def import_trades(file: UploadFile = File(...)):  # noqa: B008
                     float(row["quantity"]),
                     float(row["price"]),
                     float(row["fees"] or 0),
-                    trade_fx_rate(conn, instruments[symbol], row.get("fx_rate")),
+                    trade_fx_rate(
+                        conn, instruments[symbol], _trade_fx(row.get("fx_rate") or "")
+                    ),
                     row["notes"] or "",
                 )
             )
