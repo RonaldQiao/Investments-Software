@@ -53,6 +53,58 @@ def test_lp_statement_route_and_calculation(client):
     assert client.get("/lps/1/statement.csv").status_code == 200
 
 
+def test_capital_flow_nav_per_unit_override_and_validation(client):
+    response = client.post(
+        "/capital",
+        data={
+            "lp_id": "1",
+            "flow_type": "Contribution",
+            "amount": "10000",
+            "nav_per_unit": "800",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    from app import db
+
+    conn = db.get_conn()
+    units = conn.execute(
+        "SELECT units,nav_per_unit FROM lp_units ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert units["units"] == pytest.approx(12.5)
+    assert units["nav_per_unit"] == 800
+    conn.close()
+
+    invalid = client.post(
+        "/capital",
+        data={
+            "lp_id": "1",
+            "flow_type": "Contribution",
+            "amount": "10000",
+            "nav_per_unit": "0",
+        },
+        follow_redirects=False,
+    )
+    assert invalid.status_code == 303
+    assert "NAV/unit%20must%20be%20positive" in invalid.headers["location"]
+
+
+def test_inception_nav_per_unit_setting_is_used_before_flows_or_snapshots(client):
+    response = client.post(
+        "/settings",
+        data={"inception_nav_per_unit": "812"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    from app import db
+    from app.fees import current_nav_per_unit
+
+    conn = db.get_conn()
+    assert float(db.get_setting(conn, "inception_nav_per_unit")) == 812
+    assert current_nav_per_unit(conn) == 812
+    conn.close()
+
+
 def test_trade_at_mark_is_nav_neutral_and_snapshot_is_written(client):
     before = client.get("/api/portfolio").json()["net_nav"]
     response = client.post(

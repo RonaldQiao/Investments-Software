@@ -38,12 +38,17 @@ def lp_units_balance(conn, lp_id):
     )
 
 
-def record_cash_flow(conn, ts, amount, lp_id, note):
+def record_cash_flow(conn, ts, amount, lp_id, note, nav_per_unit=None):
     timestamp, flow_date = _timestamp(ts)
     amount = float(amount)
     if not conn.execute("SELECT 1 FROM lps WHERE id=?", (lp_id,)).fetchone():
         raise ValueError("LP not found")
-    nav_per_unit = current_nav_per_unit(conn)
+    if nav_per_unit is None:
+        nav_per_unit = current_nav_per_unit(conn)
+    else:
+        nav_per_unit = float(nav_per_unit)
+        if nav_per_unit <= 0:
+            raise ValueError("NAV/unit must be positive")
     if amount < 0 and abs(amount) > lp_units_balance(conn, lp_id) * nav_per_unit + 1e-9:
         raise ValueError("Withdrawal exceeds LP value")
     flow = conn.execute(

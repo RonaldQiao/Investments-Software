@@ -1,6 +1,6 @@
 {% extends "base.html" %}{% set title="Capital" %}
 {% block content %}
-<p class="meta">Flows issue or redeem units at the current NAV/unit, so they never affect the return series.</p>
+<p class="meta">NAV/unit = (NAV − fee liability) / units. Units are created by contributions and redeemed by withdrawals.</p>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 <section class="headline">
   <div><label>Total contributed</label><strong>{{ totals.contributed|number }}</strong></div>
@@ -16,6 +16,7 @@
   <label>New LP name<input name="new_lp" placeholder="Only for New LP…"></label>
   <label>Type<select name="flow_type"><option>Contribution</option><option>Withdrawal</option></select></label>
   <label>Amount<input name="amount" type="number" min="0" step="0.01" required></label>
+  <label>NAV/unit<input name="nav_per_unit" type="number" min="0" step="any" placeholder="{{ totals.nav_per_unit|input_number }}"><span class="meta">leave blank to issue at current NAV/unit</span></label>
   <label>Note<input name="note"></label>
   <label>New LP mgmt bps<input name="new_mgmt_fee_bps" type="number" min="0" step="1" placeholder="Default"></label>
   <label>New LP perf %<input name="new_perf_fee_pct" type="number" min="0" step=".1" placeholder="Default"></label>

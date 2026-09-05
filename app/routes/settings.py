@@ -25,8 +25,15 @@ def settings_page(request: Request):
             ("snapshot_enabled", "1"),
             ("benchmark_symbol", "SPY"),
             ("base_currency", "USD"),
+            ("inception_nav_per_unit", "1000"),
         )
     }
+    has_history = bool(
+        conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM nav_snapshots) "
+            "OR EXISTS(SELECT 1 FROM lp_units)"
+        ).fetchone()[0]
+    )
     job_logs = row_dicts(
         conn.execute(
             "SELECT ts,job,status,detail FROM job_log ORDER BY id DESC LIMIT 10"
@@ -49,6 +56,7 @@ def settings_page(request: Request):
         request,
         "settings.html",
         settings=settings,
+        inception_nav_note=has_history,
         job_logs=job_logs,
         fx_currencies=fx_currencies,
     )
@@ -98,10 +106,15 @@ def save_settings(
     snapshot_enabled: str = Form("0"),
     benchmark_symbol: str = Form("SPY"),
     base_currency: str = Form("USD"),
+    inception_nav_per_unit: float = Form(1000),
 ):
     base_currency = base_currency.strip().upper()
     if len(base_currency) != 3 or not base_currency.isalpha():
         return flash_redirect("/settings", "error", "Base currency must be 3 letters")
+    if inception_nav_per_unit <= 0:
+        return flash_redirect(
+            "/settings", "error", "Inception NAV/unit must be positive"
+        )
     conn = get_conn()
     previous_base = str(get_setting(conn, "base_currency", "USD")).strip().upper()
     base_changed = base_currency != previous_base
@@ -113,6 +126,7 @@ def save_settings(
     set_setting(conn, "snapshot_enabled", "1" if snapshot_enabled == "1" else "0")
     set_setting(conn, "benchmark_symbol", benchmark_symbol.strip().upper())
     set_setting(conn, "base_currency", base_currency)
+    set_setting(conn, "inception_nav_per_unit", inception_nav_per_unit)
     conn.close()
     if base_changed:
         return flash_redirect(

@@ -161,6 +161,7 @@ def add_capital_flow(
     flow_type: str = Form("Contribution"),
     amount: float = Form(...),
     note: str = Form(""),
+    nav_per_unit: str = Form(""),
     new_mgmt_fee_bps: str = Form(""),
     new_perf_fee_pct: str = Form(""),
 ):
@@ -183,7 +184,17 @@ def add_capital_flow(
             raise ValueError("Amount must be greater than zero")
         timestamp = flow_date.strip() or datetime.now(UTC).date().isoformat()
         signed_amount = amount if flow_type == "Contribution" else -amount
-        record_cash_flow(conn, timestamp, signed_amount, selected_lp, note.strip())
+        override = None
+        if nav_per_unit.strip():
+            try:
+                override = float(nav_per_unit)
+            except ValueError as exc:
+                raise ValueError("NAV/unit must be positive") from exc
+            if override <= 0:
+                raise ValueError("NAV/unit must be positive")
+        record_cash_flow(
+            conn, timestamp, signed_amount, selected_lp, note.strip(), override
+        )
     except (ValueError, TypeError, sqlite3.IntegrityError) as exc:
         conn.close()
         return flash_redirect("/capital", "error", str(exc))
