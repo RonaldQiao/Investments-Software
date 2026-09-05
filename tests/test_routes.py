@@ -3,6 +3,8 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from app.pricing import YAHOO_INSTRUMENT_TYPES
+
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
@@ -51,6 +53,58 @@ def test_lp_statement_route_and_calculation(client):
     assert client.get("/lps/1/statement.csv").status_code == 200
 
 
+def test_capital_flow_nav_per_unit_override_and_validation(client):
+    response = client.post(
+        "/capital",
+        data={
+            "lp_id": "1",
+            "flow_type": "Contribution",
+            "amount": "10000",
+            "nav_per_unit": "800",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    from app import db
+
+    conn = db.get_conn()
+    units = conn.execute(
+        "SELECT units,nav_per_unit FROM lp_units ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert units["units"] == pytest.approx(12.5)
+    assert units["nav_per_unit"] == 800
+    conn.close()
+
+    invalid = client.post(
+        "/capital",
+        data={
+            "lp_id": "1",
+            "flow_type": "Contribution",
+            "amount": "10000",
+            "nav_per_unit": "0",
+        },
+        follow_redirects=False,
+    )
+    assert invalid.status_code == 303
+    assert "NAV/unit%20must%20be%20positive" in invalid.headers["location"]
+
+
+def test_inception_nav_per_unit_setting_is_used_before_flows_or_snapshots(client):
+    response = client.post(
+        "/settings",
+        data={"inception_nav_per_unit": "812"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    from app import db
+    from app.fees import current_nav_per_unit
+
+    conn = db.get_conn()
+    assert float(db.get_setting(conn, "inception_nav_per_unit")) == 812
+    assert current_nav_per_unit(conn) == 812
+    conn.close()
+
+
 def test_trade_at_mark_is_nav_neutral_and_snapshot_is_written(client):
     before = client.get("/api/portfolio").json()["net_nav"]
     response = client.post(
@@ -88,6 +142,217 @@ def test_trade_at_mark_is_nav_neutral_and_snapshot_is_written(client):
     assert response.status_code == 303
     history = client.get("/api/history").json()["snapshots"]
     assert len(history) == 1
+
+
+def test_add_instrument_with_long_opening_position(client):
+    response = client.post(
+        "/instruments",
+        data={
+            "symbol": "LONG",
+            "name": "Long instrument",
+            "asset_class": "equity",
+            "pricing_source": "manual",
+            "manual_mark": "189.5",
+            "side": "LONG",
+            "quantity": "100",
+            "avg_price": "189.5",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    instrument = next(row for row in client.get("/api/instruments").json() if row["symbol"] == "LONG")
+    trade = client.get("/api/trades").json()[0]
+    assert trade["instrument_id"] == instrument["id"]
+    assert trade["side"] == "BUY"
+    assert trade["quantity"] == 100
+    assert trade["price"] == 189.5
+    assert trade["notes"] == "Opening position"
+    position = client.get("/api/portfolio").json()["positions"][0]
+    assert position["side"] == "LONG"
+    assert position["qty"] == 100
+
+
+def test_add_instrument_with_short_opening_position(client):
+    response = client.post(
+        "/instruments",
+        data={
+            "symbol": "SHORT",
+            "name": "Short instrument",
+            "asset_class": "equity",
+            "pricing_source": "manual",
+            "manual_mark": "120",
+            "side": "SHORT",
+            "quantity": "50",
+            "avg_price": "120",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    trade = client.get("/api/trades").json()[0]
+    assert trade["side"] == "SELL"
+    assert trade["quantity"] == 50
+    position = client.get("/api/portfolio").json()["positions"][0]
+    assert position["side"] == "SHORT"
+    assert position["qty"] == -50
+
+
+def test_add_instrument_requires_average_price_for_opening_position(client):
+    response = client.post(
+        "/instruments",
+        data={
+            "symbol": "MISSING-AVG",
+            "name": "Missing average",
+            "asset_class": "equity",
+            "quantity": "100",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "Avg%20price%20required%20with%20quantity" in response.headers["location"]
+    assert not any(row["symbol"] == "MISSING-AVG" for row in client.get("/api/instruments").json())
+
+
+def test_yahoo_lookup_route(client, monkeypatch):
+    async def fake_meta(symbol):
+        assert symbol == "NBIS"
+        return {
+            "symbol": "NBIS",
+            "name": "Nebius Group N.V.",
+            "asset_class": "equity",
+            "currency": "USD",
+            "price": 209.2,
+        }
+
+    monkeypatch.setattr("app.routes.api.fetch_yahoo_meta", fake_meta)
+    response = client.get("/api/lookup?symbol=%20nbis%20")
+    assert response.status_code == 200
+    assert response.json()["name"] == "Nebius Group N.V."
+    assert response.json()["price"] == 209.2
+
+    async def missing_meta(symbol):
+        return None
+
+    monkeypatch.setattr("app.routes.api.fetch_yahoo_meta", missing_meta)
+    assert client.get("/api/lookup?symbol=UNKNOWN").status_code == 404
+    assert client.get("/api/lookup?symbol=%20").status_code == 400
+
+
+def test_yahoo_instrument_type_mapping():
+    assert YAHOO_INSTRUMENT_TYPES["MUTUALFUND"] == "etf"
+    assert YAHOO_INSTRUMENT_TYPES["FUTURE"] == "future"
+    assert YAHOO_INSTRUMENT_TYPES.get("UNRECOGNIZED", "other") == "other"
+
+
+def test_yahoo_instrument_is_priced_on_creation(client, monkeypatch):
+    async def fake_fetch(symbols):
+        assert symbols == ["NBIS"]
+        return {"NBIS": 209.2}
+
+    monkeypatch.setattr("app.pricing.fetch_yahoo", fake_fetch)
+    response = client.post(
+        "/instruments",
+        data={
+            "symbol": "NBIS",
+            "name": "Nebius",
+            "asset_class": "equity",
+            "quantity": "1000",
+            "avg_price": "200.12",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "priced" in response.headers["location"]
+
+    from app import db
+
+    conn = db.get_conn()
+    instrument = conn.execute(
+        "SELECT id FROM instruments WHERE symbol='NBIS'"
+    ).fetchone()
+    price = conn.execute(
+        "SELECT price FROM prices WHERE instrument_id=?", (instrument["id"],)
+    ).fetchone()
+    conn.close()
+    assert price["price"] == 209.2
+    positions = client.get("/api/portfolio").json()["positions"]
+    assert positions[0]["mark"] == 209.2
+    html = client.get("/positions").text
+    assert "209.20" in html
+    assert "no price" not in html
+
+
+def test_yahoo_instrument_creation_without_price_keeps_instrument(client, monkeypatch):
+    async def fake_fetch(symbols):
+        assert symbols == ["NBIS"]
+        return {"NBIS": None}
+
+    monkeypatch.setattr("app.pricing.fetch_yahoo", fake_fetch)
+    response = client.post(
+        "/instruments",
+        data={
+            "symbol": "NBIS",
+            "name": "Nebius",
+            "asset_class": "equity",
+            "quantity": "1000",
+            "avg_price": "200.12",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "no%20Yahoo%20price%20yet" in response.headers["location"]
+    assert any(row["symbol"] == "NBIS" for row in client.get("/api/instruments").json())
+
+    from app import db
+
+    conn = db.get_conn()
+    assert conn.execute("SELECT COUNT(*) FROM prices").fetchone()[0] == 0
+    conn.close()
+
+
+def test_manual_instrument_creation_does_not_fetch_yahoo(client, monkeypatch):
+    calls = 0
+
+    async def fake_fetch(symbols):
+        nonlocal calls
+        calls += 1
+        return {"MANUAL": 10}
+
+    monkeypatch.setattr("app.pricing.fetch_yahoo", fake_fetch)
+    response = client.post(
+        "/instruments",
+        data={
+            "symbol": "MANUAL",
+            "name": "Manual instrument",
+            "asset_class": "other",
+            "pricing_source": "manual",
+            "manual_mark": "50",
+            "quantity": "1",
+            "avg_price": "50",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert calls == 0
+    instrument = next(
+        row for row in client.get("/api/instruments").json() if row["symbol"] == "MANUAL"
+    )
+    assert instrument["manual_mark"] == 50
+    assert instrument["manual_mark_at"] is not None
+
+
+def test_api_manual_mark_has_timestamp(client):
+    response = client.post(
+        "/api/instruments",
+        json={
+            "symbol": "API-MANUAL",
+            "name": "API manual instrument",
+            "asset_class": "other",
+            "pricing_source": "manual",
+            "manual_mark": 50,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["manual_mark_at"] is not None
 
 
 def test_dashboard_speed_guard(client):

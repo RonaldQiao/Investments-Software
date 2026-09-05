@@ -1,6 +1,5 @@
 {% extends "base.html" %}{% set title="Fees" %}
 {% block content %}
-{% if error %}<p class="error">{{ error }}</p>{% endif %}
 <h2>Terms</h2>
 <form class="form-grid" method="post" action="/fees/terms">
   <label>Management fee (bps)<input name="mgmt_fee_bps" type="number" step="1" min="0" value="{{ settings.mgmt_fee_bps }}"></label>

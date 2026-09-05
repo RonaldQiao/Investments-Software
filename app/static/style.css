@@ -2,8 +2,8 @@
 .contract-fields{display:contents}.contract-fields summary{cursor:pointer;color:#666;align-self:end}.contract-fields[hidden]{display:none}
 .expired{color:#e04545!important}
 .update-form{margin-bottom:16px}.update-form input{max-width:150px}textarea{display:block;width:100%;max-width:760px;margin:8px 0 16px;border:1px solid #ccc;border-radius:0;padding:8px;font:12px/1.25 "SFMono-Regular",Menlo,Monaco,Consolas,monospace}.meta-inline{font:12px/1.25 "SFMono-Regular",Menlo,Monaco,Consolas,monospace;color:#666}.update-form+button{margin-top:8px}
-.flash{margin:8px 0 0;font:12px/1.25 "SFMono-Regular",Menlo,Monaco,Consolas,monospace}.flash .error{color:#e04545}.flash .ok{color:#666}.price-meta{color:#999!important;font:12px/1.25 "SFMono-Regular",Menlo,Monaco,Consolas,monospace!important;letter-spacing:.02em!important}.edit-form{flex-wrap:wrap;max-width:460px}
-.actions-cell details+details:before{content:"·";color:#999;margin-right:8px}
+.flash{margin:8px 0 0;font:12px/1.25 "SFMono-Regular",Menlo,Monaco,Consolas,monospace}.flash .error{color:#e04545}.flash .ok{color:#666}.price-meta{color:#999!important;font:12px/1.25 "SFMono-Regular",Menlo,Monaco,Consolas,monospace!important;letter-spacing:.02em!important;white-space:nowrap}.edit-form{flex-wrap:wrap;max-width:460px}
+.actions-cell{white-space:nowrap}.actions-cell details+details:before{content:"·";color:#999;margin-right:8px}
 input[type=range],input[type=checkbox]{accent-color:#000}
  .page-actions{display:flex;gap:12px;align-items:center}
 input[type=date]{-webkit-appearance:none;appearance:none}.blotter-label{display:block;margin-top:16px}
@@ -15,6 +15,7 @@ h2+.headline{border-top:0}
 .legend-fund{color:#000}
 .legend-benchmark{color:#999}
 .day-date{color:#999;font:12px/1.25 "SFMono-Regular",Menlo,Monaco,Consolas,monospace;white-space:nowrap}
+.nav-left{display:flex;align-items:center;gap:12px}.fund-switch{display:inline-flex;margin:0}.fund-switch select{height:24px;border-color:#000;font-size:11px;padding:0 6px}
 .summary{grid-template-columns:repeat(5,minmax(0,1fr))}
 th.num{text-align:right}
 .page-actions{gap:8px}
