@@ -132,6 +132,13 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
           lp_id INTEGER REFERENCES lps(id) ON DELETE SET NULL,
           note TEXT
         );
+        CREATE TABLE IF NOT EXISTS cash_adjustments (
+          id INTEGER PRIMARY KEY,
+          ts TEXT NOT NULL,
+          amount REAL NOT NULL,
+          category TEXT NOT NULL DEFAULT 'other',
+          note TEXT
+        );
         CREATE TABLE IF NOT EXISTS lps (
           id INTEGER PRIMARY KEY,
           name TEXT NOT NULL UNIQUE,

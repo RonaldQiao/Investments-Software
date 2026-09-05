@@ -44,6 +44,9 @@ def compute_portfolio(conn, mark_overrides=None):
     flows = conn.execute("SELECT COALESCE(SUM(amount),0) amount FROM cash_flows").fetchone()[
         "amount"
     ]
+    adjustments = conn.execute(
+        "SELECT COALESCE(SUM(amount),0) amount FROM cash_adjustments"
+    ).fetchone()["amount"]
     positions = build_positions(trades)
     rows = []
     gross_long = gross_short = 0.0
@@ -113,7 +116,7 @@ def compute_portfolio(conn, mark_overrides=None):
                 "manual_mark_at": instrument["manual_mark_at"],
             }
         )
-    cash = float(flows) + cash_from_trades(trades)
+    cash = float(flows) + float(adjustments) + cash_from_trades(trades)
     net_exposure = gross_long - gross_short
     nav = cash + net_exposure
     fee_liability = float(get_setting(conn, "fee_liability", 0) or 0)

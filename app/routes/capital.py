@@ -12,6 +12,7 @@ from ..fees import ownership, record_cash_flow
 from ..web import flash_redirect, render, row_dicts
 
 router = APIRouter()
+ADJUSTMENT_CATEGORIES = ("dividend", "interest", "borrow", "fx", "fee", "other")
 
 
 def capital_context(conn):
@@ -25,6 +26,13 @@ def capital_context(conn):
     )
     for flow in flows:
         flow["date"] = flow["ts"][:10]
+    adjustments = row_dicts(
+        conn.execute(
+            "SELECT * FROM cash_adjustments ORDER BY ts DESC,id DESC"
+        )
+    )
+    for adjustment in adjustments:
+        adjustment["date"] = adjustment["ts"][:10]
     lps = row_dicts(conn.execute("SELECT * FROM lps ORDER BY name"))
     totals = {
         "contributed": float(
@@ -43,7 +51,13 @@ def capital_context(conn):
         conn.execute("SELECT COALESCE(SUM(units),0) FROM lp_units").fetchone()[0]
     )
     totals["nav_per_unit"] = ownership(conn)["nav_per_unit"]
-    return {"flows": flows, "lps": lps, "lp_ownership": ownership(conn)["rows"], "totals": totals}
+    return {
+        "flows": flows,
+        "adjustments": adjustments,
+        "lps": lps,
+        "lp_ownership": ownership(conn)["rows"],
+        "totals": totals,
+    }
 
 
 @router.get("/capital", response_class=HTMLResponse)
@@ -207,6 +221,38 @@ def delete_capital_flow(flow_id: int):
     conn = get_conn()
     conn.execute("DELETE FROM lp_units WHERE cash_flow_id=?", (flow_id,))
     conn.execute("DELETE FROM cash_flows WHERE id=?", (flow_id,))
+    conn.commit()
+    conn.close()
+    return RedirectResponse("/capital", status_code=303)
+
+
+@router.post("/capital/adjustments")
+def add_cash_adjustment(
+    flow_date: str = Form(""),
+    category: str = Form("other"),
+    amount: float = Form(...),
+    note: str = Form(""),
+):
+    category = category.strip().lower()
+    if category not in ADJUSTMENT_CATEGORIES:
+        return flash_redirect("/capital", "error", "Invalid adjustment category")
+    if amount == 0:
+        return flash_redirect("/capital", "error", "Amount must be non-zero")
+    timestamp = flow_date.strip() or datetime.now(UTC).date().isoformat()
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO cash_adjustments(ts,amount,category,note) VALUES (?,?,?,?)",
+        (timestamp, amount, category, note.strip()),
+    )
+    conn.commit()
+    conn.close()
+    return RedirectResponse("/capital", status_code=303)
+
+
+@router.post("/capital/adjustments/{adjustment_id}/delete")
+def delete_cash_adjustment(adjustment_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM cash_adjustments WHERE id=?", (adjustment_id,))
     conn.commit()
     conn.close()
     return RedirectResponse("/capital", status_code=303)

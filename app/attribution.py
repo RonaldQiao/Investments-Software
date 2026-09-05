@@ -153,6 +153,34 @@ def attribution(conn, start_date, end_date):
         for trade in trades_today:
             quantities[trade["instrument_id"]] += trade["signed_qty"]
 
+    adjustment_labels = {
+        "dividend": "Dividends",
+        "interest": "Interest",
+        "borrow": "Borrow",
+        "fx": "FX",
+        "fee": "Fees",
+        "other": "Other",
+    }
+    adjustments = defaultdict(float)
+    for adjustment in conn.execute(
+        "SELECT ts,amount,category FROM cash_adjustments"
+    ).fetchall():
+        adjustment_date = _trade_date(adjustment["ts"])
+        if start_date < adjustment_date <= end_date:
+            category = str(adjustment["category"] or "other").lower()
+            adjustments[category] += float(adjustment["amount"])
+    for category, amount in adjustments.items():
+        rows_by_id[("cash_adjustment", category)] = {
+            "instrument_id": None,
+            "symbol": adjustment_labels.get(category, category.title()),
+            "name": adjustment_labels.get(category, category.title()),
+            "asset_class": "cash",
+            "days_held": 0,
+            "pnl": amount,
+            "best_day": None,
+            "worst_day": None,
+        }
+
     total_pnl = sum(row["pnl"] for row in rows_by_id.values())
     for instrument_id, row in rows_by_id.items():
         daily = daily_by_id[instrument_id]

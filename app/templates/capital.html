@@ -27,4 +27,16 @@
 <table><thead><tr><th>Date</th><th>LP</th><th class="num">Amount</th><th class="num">Units issued/redeemed</th><th class="num">NAV/unit</th><th>Note</th><th></th></tr></thead><tbody>
 {% for flow in flows %}<tr><td>{{ flow.date }}</td><td class="person">{{ flow.lp_name or "—" }}</td><td class="num {{ 'negative' if flow.amount < 0 }}">{{ flow.amount|number }}</td><td class="num {{ 'negative' if flow.units is not none and flow.units < 0 }}">{{ (flow.units or 0)|number(4) }}</td><td class="num">{{ (flow.nav_per_unit or 0)|number }}</td><td>{{ flow.note or "" }}</td><td><a href="/lps/{{ flow.lp_id }}/statement">statement</a> · <form class="inline" method="post" action="/capital/{{ flow.id }}/delete"><button>Delete</button></form></td></tr>{% else %}<tr><td colspan="7" class="empty">No capital flows.</td></tr>{% endfor %}
 </tbody></table>
+<h2>Cash adjustments</h2>
+<p class="meta">Counted as return, not as a capital flow — dividends, interest, borrow cost, FX cash.</p>
+<form class="form-grid" method="post" action="/capital/adjustments">
+  <label>Date<input name="flow_date" type="date" value="{{ today }}"></label>
+  <label>Category<select name="category"><option value="dividend">Dividend</option><option value="interest">Interest</option><option value="borrow">Borrow</option><option value="fx">FX</option><option value="fee">Fee</option><option value="other">Other</option></select></label>
+  <label>Amount<input name="amount" type="number" step="any" placeholder="+ credit / − debit" required></label>
+  <label>Note<input name="note"></label>
+  <div><label>&nbsp;</label><button>Record adjustment</button></div>
+</form>
+<table><thead><tr><th>Date</th><th>Category</th><th class="num">Amount</th><th>Note</th><th></th></tr></thead><tbody>
+{% for adjustment in adjustments %}<tr><td>{{ adjustment.date }}</td><td>{{ adjustment.category }}</td><td class="num {{ 'negative' if adjustment.amount < 0 }}">{{ adjustment.amount|number }}</td><td>{{ adjustment.note or "" }}</td><td><form class="inline" method="post" action="/capital/adjustments/{{ adjustment.id }}/delete"><button>Delete</button></form></td></tr>{% else %}<tr><td colspan="5" class="empty">No cash adjustments.</td></tr>{% endfor %}
+</tbody></table>
 {% endblock %}
