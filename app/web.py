@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -13,6 +14,21 @@ from .db import get_conn, get_setting, list_funds
 
 ROOT = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=ROOT / "templates")
+
+
+def _asset_version():
+    digest = hashlib.sha1()
+    for name in ("style.css", "app.js"):
+        path = ROOT / "static" / name
+        try:
+            stat = path.stat()
+            digest.update(f"{name}:{stat.st_mtime_ns}:{stat.st_size}".encode())
+        except OSError:
+            digest.update(name.encode())
+    return digest.hexdigest()[:12]
+
+
+ASSET_VERSION = _asset_version()
 
 
 def context(request: Request, **kwargs):
@@ -114,6 +130,7 @@ templates.env.filters["signed_number"] = signed_number
 templates.env.filters["age"] = age
 templates.env.filters["expiry_days"] = expiry_days
 templates.env.filters["et_timestamp"] = et_timestamp
+templates.env.globals["asset_version"] = ASSET_VERSION
 
 
 def render(request: Request, name: str, status_code: int = 200, **kwargs):

@@ -180,3 +180,53 @@ def test_zero_unit_snapshot_keeps_imported_navpu_and_history_return(tmp_path, mo
     assert snapshot["nav_per_unit"] == pytest.approx(result["navpus"][-1])
     assert snapshot["daily_return"] is None
     assert history_series(conn)["summary"]["inception_return"] == pytest.approx(before)
+
+
+def _insert_snapshot(conn, day, navpu, source):
+    conn.execute(
+        "INSERT INTO nav_snapshots(date,ts,nav,cash,gross_long,gross_short,"
+        "net_exposure,flows_today,units_outstanding,nav_per_unit,daily_return,"
+        "levered_return,mgmt_fee_accrued,source) "
+        "VALUES (?,'now',?, ?,0,0,0,0,1,?,NULL,NULL,0,?)",
+        (day, navpu, navpu, navpu, source),
+    )
+
+
+def test_chart_window_excludes_imported_and_rebases(tmp_path, monkeypatch):
+    conn = database(tmp_path, monkeypatch)
+    set_setting(conn, "benchmark_symbol", "SPY")
+    _insert_snapshot(conn, "2022-06-27", 900, "imported")
+    _insert_snapshot(conn, "2022-06-28", 950, "imported")
+    for day in range(1, 21):
+        _insert_snapshot(conn, f"2026-01-{day:02d}", 1000 + day, "manual")
+        conn.execute(
+            "INSERT INTO benchmark_closes(symbol,date,close) VALUES ('SPY',?,?)",
+            (f"2026-01-{day:02d}", 100 + day),
+        )
+    conn.commit()
+    series = history_series(conn, "1m")
+    hover = json.loads(series["chart_hover"])
+    assert hover
+    assert all(not point["d"].startswith("2022-") for point in hover)
+    assert hover[0]["fund"] == pytest.approx(0.0)
+    assert hover[0]["bench"] == pytest.approx(0.0)
+    assert len(hover) == 20
+    full = history_series(conn, "all")
+    full_hover = json.loads(full["chart_hover"])
+    assert full_hover[0]["d"] == "2022-06-27"
+    assert len(full_hover) == 22
+    invalid = history_series(conn, "5y")
+    assert invalid["chart_window"] == "all"
+
+
+def test_history_range_route(tmp_path, monkeypatch):
+    conn = database(tmp_path, monkeypatch)
+    _insert_snapshot(conn, "2026-01-01", 1000, "manual")
+    conn.commit()
+    conn.close()
+    from app.main import app
+
+    with TestClient(app) as client:
+        response = client.get("/history?range=1w")
+    assert response.status_code == 200
+    assert 'class="active" href="/history?range=1w"' in response.text

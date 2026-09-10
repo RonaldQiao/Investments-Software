@@ -26,9 +26,9 @@ def _parse_amount(value: str) -> float:
 
 
 @router.get("/history", response_class=HTMLResponse)
-def history_page(request: Request):
+def history_page(request: Request, range: str = "all"):
     conn = get_conn()
-    series = history_series(conn)
+    series = history_series(conn, range)
     conn.close()
     return render(request, "history.html", **series)
 

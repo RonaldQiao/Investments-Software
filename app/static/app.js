@@ -86,7 +86,9 @@ document.querySelectorAll(".edit-form").forEach(form=>{
   select.addEventListener("change",toggle);toggle();
 });
 document.querySelectorAll(".chart[data-hover]").forEach(chart=>{
-  const points=JSON.parse(chart.dataset.hover||"[]");
+  if(!chart.querySelector("svg"))return;
+  let points=[];
+  try{points=JSON.parse(chart.dataset.hover||"[]");}catch(e){return;}
   const n=points.length;
   if(!n)return;
   const symbol=chart.dataset.symbol||"Benchmark";
@@ -94,6 +96,7 @@ document.querySelectorAll(".chart[data-hover]").forEach(chart=>{
   const dotFund=chart.querySelector(".chart-dot-fund");
   const dotBench=chart.querySelector(".chart-dot-bench");
   const tip=chart.querySelector(".chart-tip");
+  if(!cursor||!dotFund||!dotBench||!tip)return;
   const pct=v=>(v>=0?"+":"")+(v*100).toFixed(2)+"%";
   const move=e=>{
     const rect=chart.getBoundingClientRect();
