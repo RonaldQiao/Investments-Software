@@ -4,17 +4,18 @@ from datetime import date
 
 import pytest
 
+from app import scheduler
 from app.attribution import attribution
 from app.db import init_db, set_setting
 from app.fees import record_cash_flow
 from app.nav import take_snapshot
-from app import scheduler
 
 
 def database():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     init_db(conn)
+    set_setting(conn, "benchmark_symbol", "")
     lp_id = conn.execute("SELECT id FROM lps WHERE name='Principal'").fetchone()["id"]
     return conn, lp_id
 

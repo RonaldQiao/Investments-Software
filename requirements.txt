@@ -6,3 +6,4 @@ httpx
 apscheduler
 holidays
 pytest
+ruff
