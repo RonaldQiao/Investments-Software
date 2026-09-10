@@ -441,7 +441,99 @@ def _is_last_trading_day_of_year(snapshot_date):
     return True
 
 
-def history_series(conn):
+_CHART_WINDOWS = [
+    ("all", "All time"),
+    ("1w", "1W"),
+    ("1m", "1M"),
+    ("3m", "3M"),
+    ("6m", "6M"),
+    ("ytd", "YTD"),
+    ("1y", "1Y"),
+]
+_CHART_WINDOW_DAYS = {"1w": 7, "1m": 30, "3m": 91, "6m": 182, "1y": 365}
+
+
+def _chart_payload(rows, indices, benchmark_cums, has_benchmark, rebase):
+    nav_units = [rows[index]["nav_per_unit"] for index in indices]
+    payload = {
+        "chart": nav_units,
+        "chart_points": "",
+        "benchmark_points": "",
+        "chart_min": 0,
+        "chart_max": 0,
+        "chart_inception_y": 150,
+        "chart_hover": "[]",
+    }
+    if not nav_units:
+        return payload
+    first_cum = benchmark_cums[indices[0]]
+    normalized = {}
+    for position, index in enumerate(indices):
+        cum = benchmark_cums[index]
+        if not has_benchmark:
+            continue
+        if rebase:
+            if cum is None or not first_cum:
+                continue
+            normalized[position] = nav_units[0] * cum / first_cum
+        else:
+            normalized[position] = nav_units[0] * (cum if cum is not None else 1.0)
+    chart_values = nav_units + list(normalized.values())
+    low, high = min(chart_values), max(chart_values)
+    span = high - low or 1
+
+    def x(position):
+        return (position / max(len(nav_units) - 1, 1)) * 1000
+
+    def y(value):
+        return 150 - ((value - low) / span) * 140
+
+    chart_points = [
+        f"{x(position):.1f},{y(value):.1f}"
+        for position, value in enumerate(nav_units)
+    ]
+    benchmark_points = [
+        f"{x(position):.1f},{y(value):.1f}"
+        for position, value in normalized.items()
+    ]
+    if len(chart_points) == 1:
+        chart_points.append(chart_points[0].replace("0.0,", "1000.0,", 1))
+    hover = []
+    for position, index in enumerate(indices):
+        cum = benchmark_cums[index]
+        if rebase:
+            fund = nav_units[position] / nav_units[0] - 1 if nav_units[0] else None
+            bench = cum / first_cum - 1 if cum is not None and first_cum else None
+        else:
+            fund = rows[index]["cumulative_return"]
+            bench = cum - 1 if cum is not None else None
+        hover.append(
+            {
+                "d": rows[index]["date"],
+                "nav": round(nav_units[position], 2),
+                "fund": fund,
+                "bench": bench,
+                "y": round(y(nav_units[position]), 1),
+                "yb": (
+                    round(y(normalized[position]), 1)
+                    if position in normalized and (rebase or cum is not None)
+                    else None
+                ),
+            }
+        )
+    payload.update(
+        chart_points=" ".join(chart_points),
+        benchmark_points=" ".join(benchmark_points),
+        chart_min=low,
+        chart_max=high,
+        chart_inception_y=y(nav_units[0] if rebase else 1000),
+        chart_hover=json.dumps(hover),
+    )
+    return payload
+
+
+def history_series(conn, window: str = "all"):
+    window = window if window in dict(_CHART_WINDOWS) else "all"
     rows = [dict(row) for row in conn.execute("SELECT * FROM nav_snapshots ORDER BY date").fetchall()]
     benchmark_symbol = str(get_setting(conn, "benchmark_symbol", "") or "").strip().upper()
     benchmark_rows = [
@@ -453,29 +545,30 @@ def history_series(conn):
     ] if benchmark_symbol else []
     live_rows = [row for row in rows if row["source"] != "imported"]
     pairs = pair_returns(live_rows, benchmark_rows)
-    benchmark_closes = sorted(
-        (row["date"], float(row["close"]))
+    close_by_date = {
+        row["date"]: float(row["close"])
         for row in benchmark_rows
         if row["close"] is not None
-    )
-    benchmark_returns = {
-        current[0]: current[1] / previous[1] - 1
-        for previous, current in pairwise(benchmark_closes)
-        if previous[1]
     }
-    paired = {
-        row["date"]: benchmark_returns[row["date"]]
-        for row in rows
-        if row["date"] in benchmark_returns and row["daily_return"] is not None
-    }
+    sorted_closes = sorted(close_by_date.items())
+    anchor_close = None
+    if rows:
+        anchor_close = close_by_date.get(rows[0]["date"])
+        if anchor_close is None and sorted_closes:
+            earlier = [c for d, c in sorted_closes if d <= rows[0]["date"]]
+            anchor_close = earlier[-1] if earlier else sorted_closes[0][1]
+    own_closes = sum(1 for row in rows if row["date"] in close_by_date)
+    anchor_on_first = bool(rows) and rows[0]["date"] in close_by_date
+    has_benchmark = anchor_close is not None and own_closes > (1 if anchor_on_first else 0)
     cumulative = 1.0
     cumulative_levered = 1.0
-    benchmark_cumulative = 1.0
     benchmark_values = []
+    benchmark_cums = []
+    last_close = None
     returns = []
     live_returns = []
     return_days = []
-    for row in rows:
+    for index, row in enumerate(rows):
         if row["daily_return"] is not None:
             cumulative *= 1 + row["daily_return"]
             returns.append(row["daily_return"])
@@ -486,16 +579,29 @@ def history_series(conn):
             cumulative_levered *= 1 + row["levered_return"]
         row["cumulative_return"] = cumulative - 1 if returns else None
         row["cumulative_levered_return"] = cumulative_levered - 1 if row["levered_return"] is not None else None
-        row["benchmark_return"] = paired.get(row["date"])
-        row["excess_return"] = (
-            row["daily_return"] - row["benchmark_return"]
-            if row["daily_return"] is not None and row["benchmark_return"] is not None
+        own_close = close_by_date.get(row["date"])
+        period_return = (
+            own_close / last_close - 1
+            if index and own_close is not None and last_close
             else None
         )
-        if row["benchmark_return"] is not None:
-            benchmark_cumulative *= 1 + row["benchmark_return"]
-        benchmark_values.append(benchmark_cumulative)
-    nav_units = [row["nav_per_unit"] for row in rows if row["nav_per_unit"]]
+        if own_close is not None:
+            last_close = own_close
+        benchmark_cum = (
+            last_close / anchor_close
+            if last_close is not None and anchor_close
+            else None
+        )
+        row["benchmark_return"] = period_return
+        row["excess_return"] = (
+            row["daily_return"] - period_return
+            if row["daily_return"] is not None and period_return is not None
+            else None
+        )
+        benchmark_cums.append(benchmark_cum)
+        benchmark_values.append(benchmark_cum if benchmark_cum is not None else 1.0)
+    nav_indices = [index for index, row in enumerate(rows) if row["nav_per_unit"]]
+    nav_units = [rows[index]["nav_per_unit"] for index in nav_indices]
     peaks = []
     peak = None
     for value in nav_units:
@@ -509,7 +615,6 @@ def history_series(conn):
         else 0
     )
     vol = math.sqrt(variance) * math.sqrt(252)
-    has_benchmark = bool(paired)
     elapsed_days = (
         (date.fromisoformat(rows[-1]["date"]) - date.fromisoformat(rows[0]["date"])).days
         if len(rows) > 1
@@ -529,47 +634,46 @@ def history_series(conn):
         "best_day_date": max(return_days, key=lambda item: item[1])[0] if live_returns else None,
         "worst_day": min(live_returns) if live_returns else None,
         "worst_day_date": min(return_days, key=lambda item: item[1])[0] if live_returns else None,
-        "benchmark_return": benchmark_cumulative - 1 if has_benchmark else None,
+        "benchmark_return": (
+            benchmark_values[-1] - 1 if has_benchmark and benchmark_values else None
+        ),
         "excess_return": (
-            cumulative - benchmark_cumulative if has_benchmark and returns else None
+            cumulative - benchmark_values[-1]
+            if has_benchmark and benchmark_values and returns
+            else None
         ),
         "beta": beta(pairs) if len(pairs) >= 10 else None,
     }
-    chart_points = []
-    benchmark_points = []
-    if nav_units:
-        normalized_benchmark = (
-            [nav_units[0] * value for value in benchmark_values]
-            if has_benchmark
-            else []
-        )
-        chart_values = nav_units + normalized_benchmark
-        low, high = min(chart_values), max(chart_values)
-        span = high - low or 1
-        chart_points = [
-            f"{(index / max(len(nav_units) - 1, 1)) * 1000:.1f},{150 - ((value - low) / span) * 140:.1f}"
-            for index, value in enumerate(nav_units)
+    chart_indices = nav_indices
+    if window != "all" and rows:
+        live = [
+            index
+            for index in nav_indices
+            if rows[index]["source"] != "imported"
         ]
-        benchmark_points = [
-            f"{(index / max(len(normalized_benchmark) - 1, 1)) * 1000:.1f},{150 - ((value - low) / span) * 140:.1f}"
-            for index, value in enumerate(normalized_benchmark)
-        ]
-        if len(chart_points) == 1:
-            chart_points.append(chart_points[0].replace("0.0,", "1000.0,", 1))
-    else:
-        low = high = 0
-    chart_inception_y = (
-        150 - ((1000 - low) / (high - low or 1)) * 140 if nav_units else 150
+        if live:
+            end = date.fromisoformat(rows[live[-1]]["date"])
+            cutoff = (
+                date(end.year, 1, 1)
+                if window == "ytd"
+                else end - timedelta(days=_CHART_WINDOW_DAYS[window])
+            )
+            chart_indices = [
+                index
+                for index in live
+                if date.fromisoformat(rows[index]["date"]) >= cutoff
+            ] or live
+        if not chart_indices:
+            chart_indices = nav_indices
+    payload = _chart_payload(
+        rows, chart_indices, benchmark_cums, has_benchmark, window != "all"
     )
     return {
         "snapshots": rows,
         "summary": summary,
-        "chart": nav_units,
-        "chart_points": " ".join(chart_points),
-        "benchmark_points": " ".join(benchmark_points),
-        "chart_min": low,
-        "chart_max": high,
-        "chart_inception_y": chart_inception_y,
+        **payload,
+        "chart_window": window,
+        "chart_windows": _CHART_WINDOWS,
         "benchmark_values": benchmark_values,
         "benchmark_symbol": benchmark_symbol,
         "imported_exists": any(row["source"] == "imported" for row in rows),

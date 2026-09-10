@@ -1,6 +1,6 @@
 import csv
 import io
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -26,9 +26,9 @@ def _parse_amount(value: str) -> float:
 
 
 @router.get("/history", response_class=HTMLResponse)
-def history_page(request: Request):
+def history_page(request: Request, range: str = "all"):
     conn = get_conn()
-    series = history_series(conn)
+    series = history_series(conn, range)
     conn.close()
     return render(request, "history.html", **series)
 
@@ -66,6 +66,26 @@ async def import_history(file: UploadFile):
         return flash_redirect("/history", "ok", message)
     except (UnicodeDecodeError, ValueError, csv.Error, TypeError, AttributeError) as exc:
         return flash_redirect("/history", "error", str(exc))
+    finally:
+        conn.close()
+
+
+@router.post("/history/benchmark/backfill")
+async def backfill_benchmark_closes():
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key='benchmark_symbol'"
+        ).fetchone()
+        symbol = str(row["value"]).strip().upper() if row else ""
+        if not symbol:
+            return flash_redirect("/history", "error", "No benchmark symbol set")
+        dates = [
+            date.fromisoformat(r["date"])
+            for r in conn.execute("SELECT date FROM nav_snapshots").fetchall()
+        ]
+        stored = await backfill_benchmark(conn, dates)
+        return flash_redirect("/history", "ok", f"{symbol} closes backfilled: {stored}")
     finally:
         conn.close()
 
