@@ -14,6 +14,7 @@ def test_random_walk_cumulative_returns_and_nav_unit_identity():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     init_db(conn)
+    set_setting(conn, "benchmark_symbol", "")
     set_setting(conn, "mgmt_fee_bps", 200)
     lp_id = conn.execute("SELECT id FROM lps WHERE name='Principal'").fetchone()["id"]
     investor_id = conn.execute(

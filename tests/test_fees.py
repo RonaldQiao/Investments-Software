@@ -19,6 +19,7 @@ def database():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     init_db(conn)
+    set_setting(conn, "benchmark_symbol", "")
     principal = conn.execute(
         "SELECT id FROM lps WHERE name='Principal'"
     ).fetchone()["id"]
@@ -44,6 +45,25 @@ def test_cash_flows_issue_and_redeem_at_current_nav():
     withdrawal = record_cash_flow(conn, "2026-01-02", -220, principal, "withdraw")
     assert withdrawal["units"] == pytest.approx(-0.2)
     assert conn.execute("SELECT COUNT(*) FROM lp_units").fetchone()[0] == 3
+
+
+def test_cash_flow_can_override_nav_per_unit():
+    conn, principal = database()
+    result = record_cash_flow(
+        conn, "2026-01-01", 10_000, principal, "historical contribution", 800
+    )
+    units = conn.execute(
+        "SELECT units,nav_per_unit FROM lp_units WHERE cash_flow_id=?",
+        (result["cash_flow_id"],),
+    ).fetchone()
+    assert units["units"] == pytest.approx(12.5)
+    assert units["nav_per_unit"] == 800
+
+
+def test_cash_flow_rejects_non_positive_nav_per_unit():
+    conn, principal = database()
+    with pytest.raises(ValueError, match="NAV/unit must be positive"):
+        record_cash_flow(conn, "2026-01-01", 10_000, principal, "invalid", 0)
 
 
 def test_management_fees_use_per_lp_terms_and_exclude_gp():
