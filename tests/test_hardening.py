@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from urllib.parse import unquote
 
 import pytest
@@ -14,6 +14,7 @@ def memory_db():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     init_db(conn)
+    set_setting(conn, "benchmark_symbol", "")
     return conn
 
 
@@ -27,7 +28,7 @@ def test_failed_and_stale_prices_are_reported():
         "INSERT INTO trades(instrument_id,ts,side,quantity,price) VALUES (?,?,'BUY',2,10)",
         (instrument_id, "2026-01-01"),
     )
-    old = datetime.now(timezone.utc).replace(year=2025).isoformat()
+    old = datetime.now(UTC).replace(year=2025).isoformat()
     conn.execute(
         "INSERT INTO prices(instrument_id,price,ts,source) VALUES (?,?,?,'yahoo')",
         (instrument_id, 12, old),
@@ -67,7 +68,7 @@ def test_snapshot_falls_back_and_audits_marks():
     conn.execute(
         "INSERT OR REPLACE INTO prices(instrument_id,price,ts,source) "
         "VALUES (?,20,?,'yahoo')",
-        (instrument_id, datetime.now(timezone.utc).isoformat()),
+        (instrument_id, datetime.now(UTC).isoformat()),
     )
     set_setting(conn, "last_refresh_failures", "[]")
     conn.commit()
@@ -144,7 +145,7 @@ def test_trade_csv_round_trip_and_edit_warning(client, tmp_path):
     )
     exported = client.get("/trades.csv")
     assert exported.status_code == 200
-    assert exported.text.splitlines()[0] == "ts,symbol,side,quantity,price,fees,notes"
+    assert exported.text.splitlines()[0] == "ts,symbol,side,quantity,price,fees,fx_rate,notes"
     original_positions = client.get("/api/portfolio").json()["positions"]
     from app import db
     from app.main import app
@@ -172,7 +173,10 @@ def test_trade_csv_round_trip_and_edit_warning(client, tmp_path):
         assert "ok=" in imported.headers["location"]
         assert fresh_client.get("/trades").status_code == 200
         fresh_positions = fresh_client.get("/api/portfolio").json()["positions"]
-    db.DB_PATH = original_db
+        db.DB_PATH = original_db
+    for rows in (original_positions, fresh_positions):
+        for row in rows:
+            row["manual_mark_at"] = None
     assert fresh_positions == original_positions
     edited = client.post(
         f"/instruments/{instrument['id']}/edit",
