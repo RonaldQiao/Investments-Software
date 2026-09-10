@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -99,7 +99,7 @@ def create_backup():
 
 
 @router.post("/settings")
-def save_settings(
+async def save_settings(
     fund_name: str = Form("Ledger"),
     leverage: float = Form(1.0),
     borrow_rate: float = Form(0.05),
@@ -117,7 +117,9 @@ def save_settings(
         )
     conn = get_conn()
     previous_base = str(get_setting(conn, "base_currency", "USD")).strip().upper()
+    previous_benchmark = str(get_setting(conn, "benchmark_symbol", "")).strip().upper()
     base_changed = base_currency != previous_base
+    benchmark_changed = benchmark_symbol.strip().upper() != previous_benchmark
     if base_changed:
         conn.execute("DELETE FROM fx_rates")
     set_setting(conn, "fund_name", fund_name.strip() or "Ledger")
@@ -127,6 +129,19 @@ def save_settings(
     set_setting(conn, "benchmark_symbol", benchmark_symbol.strip().upper())
     set_setting(conn, "base_currency", base_currency)
     set_setting(conn, "inception_nav_per_unit", inception_nav_per_unit)
+    if benchmark_changed and benchmark_symbol.strip():
+        from ..nav import backfill_benchmark
+
+        dates = [
+            date.fromisoformat(row["date"])
+            for row in conn.execute("SELECT date FROM nav_snapshots").fetchall()
+        ]
+        stored = await backfill_benchmark(conn, dates)
+        symbol = benchmark_symbol.strip().upper()
+        conn.close()
+        return flash_redirect(
+            "/settings", "ok", f"Benchmark set to {symbol}; backfilled {stored} closes"
+        )
     conn.close()
     if base_changed:
         return flash_redirect(

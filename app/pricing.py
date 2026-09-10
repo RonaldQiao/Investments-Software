@@ -164,13 +164,18 @@ async def fetch_benchmark_history(symbol: str, range_: str = "5d") -> dict[str, 
 async def _fetch_benchmark_chart(
     symbol: str, params: dict[str, str | int]
 ) -> dict[str, float | None]:
+    from urllib.parse import quote
+
+    from .benchmark import yahoo_benchmark_symbol
+
+    yahoo_symbol = quote(yahoo_benchmark_symbol(symbol), safe="")
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         async with httpx.AsyncClient(
             headers=headers, timeout=10.0, follow_redirects=True
         ) as client:
             response = await client.get(
-                f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}",
+                f"https://query2.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}",
                 params=params,
             )
             response.raise_for_status()

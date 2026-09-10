@@ -70,6 +70,28 @@ async def import_history(file: UploadFile):
         conn.close()
 
 
+@router.post("/history/benchmark/backfill")
+async def backfill_benchmark_closes():
+    from datetime import date
+
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key='benchmark_symbol'"
+        ).fetchone()
+        symbol = str(row["value"]).strip().upper() if row else ""
+        if not symbol:
+            return flash_redirect("/history", "error", "No benchmark symbol set")
+        dates = [
+            date.fromisoformat(r["date"])
+            for r in conn.execute("SELECT date FROM nav_snapshots").fetchall()
+        ]
+        stored = await backfill_benchmark(conn, dates)
+        return flash_redirect("/history", "ok", f"{symbol} closes backfilled: {stored}")
+    finally:
+        conn.close()
+
+
 @router.post("/history/import/clear")
 def clear_imported_history():
     conn = get_conn()

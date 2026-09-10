@@ -453,29 +453,30 @@ def history_series(conn):
     ] if benchmark_symbol else []
     live_rows = [row for row in rows if row["source"] != "imported"]
     pairs = pair_returns(live_rows, benchmark_rows)
-    benchmark_closes = sorted(
-        (row["date"], float(row["close"]))
+    close_by_date = {
+        row["date"]: float(row["close"])
         for row in benchmark_rows
         if row["close"] is not None
-    )
-    benchmark_returns = {
-        current[0]: current[1] / previous[1] - 1
-        for previous, current in pairwise(benchmark_closes)
-        if previous[1]
     }
-    paired = {
-        row["date"]: benchmark_returns[row["date"]]
-        for row in rows
-        if row["date"] in benchmark_returns and row["daily_return"] is not None
-    }
+    sorted_closes = sorted(close_by_date.items())
+    anchor_close = None
+    if rows:
+        anchor_close = close_by_date.get(rows[0]["date"])
+        if anchor_close is None and sorted_closes:
+            earlier = [c for d, c in sorted_closes if d <= rows[0]["date"]]
+            anchor_close = earlier[-1] if earlier else sorted_closes[0][1]
+    own_closes = sum(1 for row in rows if row["date"] in close_by_date)
+    anchor_on_first = bool(rows) and rows[0]["date"] in close_by_date
+    has_benchmark = anchor_close is not None and own_closes > (1 if anchor_on_first else 0)
     cumulative = 1.0
     cumulative_levered = 1.0
-    benchmark_cumulative = 1.0
     benchmark_values = []
+    benchmark_cums = []
+    last_close = None
     returns = []
     live_returns = []
     return_days = []
-    for row in rows:
+    for index, row in enumerate(rows):
         if row["daily_return"] is not None:
             cumulative *= 1 + row["daily_return"]
             returns.append(row["daily_return"])
@@ -486,15 +487,27 @@ def history_series(conn):
             cumulative_levered *= 1 + row["levered_return"]
         row["cumulative_return"] = cumulative - 1 if returns else None
         row["cumulative_levered_return"] = cumulative_levered - 1 if row["levered_return"] is not None else None
-        row["benchmark_return"] = paired.get(row["date"])
-        row["excess_return"] = (
-            row["daily_return"] - row["benchmark_return"]
-            if row["daily_return"] is not None and row["benchmark_return"] is not None
+        own_close = close_by_date.get(row["date"])
+        period_return = (
+            own_close / last_close - 1
+            if index and own_close is not None and last_close
             else None
         )
-        if row["benchmark_return"] is not None:
-            benchmark_cumulative *= 1 + row["benchmark_return"]
-        benchmark_values.append(benchmark_cumulative)
+        if own_close is not None:
+            last_close = own_close
+        benchmark_cum = (
+            last_close / anchor_close
+            if last_close is not None and anchor_close
+            else None
+        )
+        row["benchmark_return"] = period_return
+        row["excess_return"] = (
+            row["daily_return"] - period_return
+            if row["daily_return"] is not None and period_return is not None
+            else None
+        )
+        benchmark_cums.append(benchmark_cum)
+        benchmark_values.append(benchmark_cum if benchmark_cum is not None else 1.0)
     nav_units = [row["nav_per_unit"] for row in rows if row["nav_per_unit"]]
     peaks = []
     peak = None
@@ -509,7 +522,6 @@ def history_series(conn):
         else 0
     )
     vol = math.sqrt(variance) * math.sqrt(252)
-    has_benchmark = bool(paired)
     elapsed_days = (
         (date.fromisoformat(rows[-1]["date"]) - date.fromisoformat(rows[0]["date"])).days
         if len(rows) > 1
@@ -529,9 +541,13 @@ def history_series(conn):
         "best_day_date": max(return_days, key=lambda item: item[1])[0] if live_returns else None,
         "worst_day": min(live_returns) if live_returns else None,
         "worst_day_date": min(return_days, key=lambda item: item[1])[0] if live_returns else None,
-        "benchmark_return": benchmark_cumulative - 1 if has_benchmark else None,
+        "benchmark_return": (
+            benchmark_values[-1] - 1 if has_benchmark and benchmark_values else None
+        ),
         "excess_return": (
-            cumulative - benchmark_cumulative if has_benchmark and returns else None
+            cumulative - benchmark_values[-1]
+            if has_benchmark and benchmark_values and returns
+            else None
         ),
         "beta": beta(pairs) if len(pairs) >= 10 else None,
     }
