@@ -1,7 +1,8 @@
 PYTHON := .venv/bin/python
+SYSTEM_PYTHON ?= $(shell command -v python3.12 || command -v python3.11 || command -v python3)
 
 setup:
-	/opt/homebrew/bin/python3.12 -m venv .venv
+	$(SYSTEM_PYTHON) -m venv .venv
 	$(PYTHON) -m pip install -r requirements.txt
 
 run:
@@ -21,3 +22,9 @@ backup:
 
 backfill-benchmark:
 	$(PYTHON) scripts/backfill_benchmark.py
+
+install-agent:
+	bash scripts/install_launchd.sh
+
+uninstall-agent:
+	bash scripts/uninstall_launchd.sh
