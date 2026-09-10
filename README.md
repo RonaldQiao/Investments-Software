@@ -13,6 +13,10 @@ make run
 make test
 ```
 
+Requires Python 3.11+ (`brew install python@3.12`). `make setup` picks the
+first of `python3.12`, `python3.11`, `python3` on your PATH; override with
+`make setup SYSTEM_PYTHON=/path/to/python3`.
+
 `make run` serves the application at <http://127.0.0.1:8000>. Yahoo marks use
 the symbol stored on each instrument. Futures use symbols such as `ES=F`,
 crypto uses `BTC-USD`, and options are manual instruments.
@@ -35,6 +39,30 @@ use `BUY 100 AAPL @ 189.5` or `SELL 2 ES=F @ 5400 fee 4.5`; `SHORT` is an alias
 for `SELL` and `COVER` is an alias for `BUY`. Contract instruments may include
 an underlying, expiry, strike, and call/put type. Yahoo options without an
 explicit symbol use OCC symbols such as `AAPL261218C00200000`.
+
+The Positions Add instrument form supports optional LONG/SHORT opening fields
+(quantity, average price, and fees); Yahoo instruments are priced immediately on
+creation, and `/api/lookup?symbol=NBIS` provides Yahoo symbol metadata and a
+current price for autofill.
+
+## Currencies
+
+Settings defines the three-letter accounting base currency (USD by default). Foreign-currency positions use Yahoo FX rates or a manual override; each trade records the base-per-local `fx_rate` used for its cash and P&L accounting.
+
+## Multiple funds
+
+Each fund is a separate SQLite file. Use the header selector or Settings →
+New fund to create and switch funds; `LEDGER_DB` still points to the default
+fund, and `python -m app.snapshot --fund x` targets one fund explicitly.
+
+## Track record import
+
+History accepts CSV files with `date,nav,flow` columns; dates may use
+`YYYY-MM-DD` or `M/D/YY`, and currency-formatted NAV values are supported.
+Flow is capital added (+) or withdrawn (−) during the period ending on that
+date. Imported NAV/unit history starts at the configured inception level and
+scales to the first live snapshot when one exists; otherwise its final level
+becomes the next live inception level.
 
 Use `make backup` (or `POST /backup` in Settings) to create a SQLite backup in
 `data/backups/`. Only the newest 20 backups are retained. GitHub Actions runs

@@ -1,22 +1,88 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = Path(os.environ.get("LEDGER_DB", ROOT / "data" / "ledger.db"))
+FUNDS_DIR = DB_PATH.parent / "funds"
+DEFAULT_FUND = "ledger"
+ACTIVE_DB: ContextVar[Path | None] = ContextVar("active_db", default=None)
 
 
-def get_conn() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+def fund_path(slug: str) -> Path:
+    return DB_PATH if slug == DEFAULT_FUND else FUNDS_DIR / f"{slug}.db"
+
+
+def get_conn(path: Path | None = None) -> sqlite3.Connection:
+    database_path = path or ACTIVE_DB.get() or DB_PATH
+    database_path = Path(database_path)
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(database_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def slugify(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(name).lower()).strip("-")
+    if not slug or slug == DEFAULT_FUND or fund_path(slug).exists():
+        raise ValueError("Fund name is empty or already exists")
+    return slug
+
+
+def list_funds() -> list[dict]:
+    paths = [DB_PATH]
+    if FUNDS_DIR.exists():
+        paths.extend(sorted(FUNDS_DIR.glob("*.db"), key=lambda path: path.stem))
+    active_path = ACTIVE_DB.get() or DB_PATH
+    funds = []
+    for path in paths:
+        conn = None
+        try:
+            conn = get_conn(path)
+            has_settings = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings'"
+            ).fetchone()
+            if not has_settings:
+                init_db(conn)
+            name = get_setting(conn, "fund_name", path.stem)
+            funds.append(
+                {
+                    "slug": DEFAULT_FUND if path == DB_PATH else path.stem,
+                    "name": name,
+                    "path": path,
+                    "relative_path": str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path),
+                    "active": path == active_path,
+                }
+            )
+        except (OSError, sqlite3.Error):
+            pass
+        finally:
+            if conn is not None:
+                conn.close()
+    return funds
+
+
+def create_fund(name: str) -> str:
+    slug = slugify(name)
+    FUNDS_DIR.mkdir(parents=True, exist_ok=True)
+    path = fund_path(slug)
+    if path.exists():
+        raise ValueError("Fund name is empty or already exists")
+    conn = get_conn(path)
+    try:
+        init_db(conn)
+        set_setting(conn, "fund_name", name.strip())
+    finally:
+        conn.close()
+    return slug
 
 
 def init_db(conn: sqlite3.Connection | None = None) -> None:
@@ -35,6 +101,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
           yahoo_symbol TEXT,
           manual_mark REAL,
           manual_mark_at TEXT,
+          price_scale REAL NOT NULL DEFAULT 1,
           notes TEXT,
           underlying TEXT,
           expiry TEXT,
@@ -49,6 +116,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
           quantity REAL NOT NULL CHECK(quantity > 0),
           price REAL NOT NULL,
           fees REAL NOT NULL DEFAULT 0,
+          fx_rate REAL NOT NULL DEFAULT 1,
           notes TEXT
         );
         CREATE TABLE IF NOT EXISTS prices (
@@ -62,6 +130,13 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
           ts TEXT NOT NULL,
           amount REAL NOT NULL,
           lp_id INTEGER REFERENCES lps(id) ON DELETE SET NULL,
+          note TEXT
+        );
+        CREATE TABLE IF NOT EXISTS cash_adjustments (
+          id INTEGER PRIMARY KEY,
+          ts TEXT NOT NULL,
+          amount REAL NOT NULL,
+          category TEXT NOT NULL DEFAULT 'other',
           note TEXT
         );
         CREATE TABLE IF NOT EXISTS lps (
@@ -100,6 +175,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
           date TEXT NOT NULL REFERENCES nav_snapshots(date) ON DELETE CASCADE,
           instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
           mark REAL NOT NULL,
+          fx_rate REAL NOT NULL DEFAULT 1,
           source TEXT NOT NULL,
           PRIMARY KEY (date, instrument_id)
         );
@@ -133,6 +209,12 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
           close REAL,
           PRIMARY KEY (symbol, date)
         );
+        CREATE TABLE IF NOT EXISTS fx_rates (
+          currency TEXT PRIMARY KEY,
+          rate REAL NOT NULL,
+          ts TEXT NOT NULL,
+          source TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS settings (
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL
@@ -147,9 +229,23 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         ("expiry", "TEXT"),
         ("strike", "REAL"),
         ("option_type", "TEXT CHECK(option_type IN ('C','P'))"),
+        ("price_scale", "REAL NOT NULL DEFAULT 1"),
     ):
         if name not in existing_columns:
             conn.execute(f"ALTER TABLE instruments ADD COLUMN {name} {definition}")
+    trade_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(trades)").fetchall()
+    }
+    if "fx_rate" not in trade_columns:
+        conn.execute("ALTER TABLE trades ADD COLUMN fx_rate REAL NOT NULL DEFAULT 1")
+    snapshot_mark_columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(snapshot_marks)").fetchall()
+    }
+    if "fx_rate" not in snapshot_mark_columns:
+        conn.execute(
+            "ALTER TABLE snapshot_marks ADD COLUMN fx_rate REAL NOT NULL DEFAULT 1"
+        )
     lp_columns = {
         row["name"] for row in conn.execute("PRAGMA table_info(lps)").fetchall()
     }
@@ -177,6 +273,7 @@ def init_db(conn: sqlite3.Connection | None = None) -> None:
         "last_refresh_failures": "[]",
         "last_refresh_at": "",
         "benchmark_symbol": "SPY",
+        "base_currency": "USD",
     }
     conn.executemany(
         "INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",

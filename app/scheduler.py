@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import holidays
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from .db import get_conn, get_setting
+from .db import get_conn, get_setting, list_funds
 from .nav import take_snapshot
 from .pricing import refresh_prices
 
@@ -87,19 +87,23 @@ async def run_snapshot_job(
 
 
 def run_job():
-    conn = get_conn()
-    try:
-        asyncio.run(run_snapshot_job(conn, "scheduled"))
-    finally:
-        conn.close()
+    for fund in list_funds():
+        LOGGER.info("Running scheduled snapshot for fund %s", fund["slug"])
+        conn = get_conn(fund["path"])
+        try:
+            asyncio.run(run_snapshot_job(conn, "scheduled"))
+        finally:
+            conn.close()
 
 
 async def catch_up_async():
-    conn = get_conn()
-    try:
-        await run_snapshot_job(conn, "catch-up", catch_up=True)
-    finally:
-        conn.close()
+    for fund in list_funds():
+        LOGGER.info("Running catch-up snapshot for fund %s", fund["slug"])
+        conn = get_conn(fund["path"])
+        try:
+            await run_snapshot_job(conn, "catch-up", catch_up=True)
+        finally:
+            conn.close()
 
 
 def _missing_snapshot(conn, day):

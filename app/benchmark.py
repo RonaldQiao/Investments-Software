@@ -3,6 +3,22 @@ from __future__ import annotations
 from collections.abc import Iterable
 from itertools import pairwise
 
+_YAHOO_ALIASES = {
+    "SPX": "^GSPC",
+    "GSPC": "^GSPC",
+    "SP500": "^GSPC",
+    "NDX": "^NDX",
+    "DJI": "^DJI",
+    "DJIA": "^DJI",
+    "RUT": "^RUT",
+    "VIX": "^VIX",
+}
+
+
+def yahoo_benchmark_symbol(symbol: str) -> str:
+    key = symbol.strip().upper().lstrip("$")
+    return _YAHOO_ALIASES.get(key.lstrip("^"), key)
+
 
 def _date_key(value):
     return str(value)[:10]
