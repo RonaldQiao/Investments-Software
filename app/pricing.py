@@ -305,11 +305,3 @@ async def refresh_prices(conn) -> list[str]:
     set_setting(conn, "last_refresh_at", now)
     conn.commit()
     return failed
-
-
-def mark_for(instrument, price_row) -> float | None:
-    source = instrument["pricing_source"] if hasattr(instrument, "keys") else instrument.get("pricing_source")
-    manual = instrument["manual_mark"] if hasattr(instrument, "keys") else instrument.get("manual_mark")
-    if source == "manual" or price_row is None:
-        return float(manual) if manual is not None else None
-    return float(price_row["price"] if hasattr(price_row, "keys") else price_row.get("price"))
