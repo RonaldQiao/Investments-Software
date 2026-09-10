@@ -1,3 +1,4 @@
+import json
 from datetime import date
 
 import pytest
@@ -117,6 +118,11 @@ def test_import_route_parses_csv_and_backfills_weekend(tmp_path, monkeypatch):
     ]
     series = history_series(conn)
     assert series["summary"]["benchmark_return"] == pytest.approx(4328.82 / 3900.12 - 1)
+    hover = json.loads(series["chart_hover"])
+    assert len(hover) == len(series["chart"])
+    assert all(
+        set(point) == {"d", "nav", "fund", "bench", "y", "yb"} for point in hover
+    )
     empty = database()
     set_setting(empty, "benchmark_symbol", "SPY")
     empty.execute(

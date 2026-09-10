@@ -508,7 +508,8 @@ def history_series(conn):
         )
         benchmark_cums.append(benchmark_cum)
         benchmark_values.append(benchmark_cum if benchmark_cum is not None else 1.0)
-    nav_units = [row["nav_per_unit"] for row in rows if row["nav_per_unit"]]
+    nav_indices = [index for index, row in enumerate(rows) if row["nav_per_unit"]]
+    nav_units = [rows[index]["nav_per_unit"] for index in nav_indices]
     peaks = []
     peak = None
     for value in nav_units:
@@ -577,6 +578,32 @@ def history_series(conn):
     chart_inception_y = (
         150 - ((1000 - low) / (high - low or 1)) * 140 if nav_units else 150
     )
+    span = (high - low) or 1
+    chart_hover = json.dumps(
+        [
+            {
+                "d": rows[index]["date"],
+                "nav": round(nav_units[position], 2),
+                "fund": rows[index]["cumulative_return"],
+                "bench": (
+                    benchmark_cums[index] - 1
+                    if benchmark_cums[index] is not None
+                    else None
+                ),
+                "y": round(150 - ((nav_units[position] - low) / span) * 140, 1),
+                "yb": (
+                    round(
+                        150
+                        - ((nav_units[0] * benchmark_values[index] - low) / span) * 140,
+                        1,
+                    )
+                    if has_benchmark and benchmark_cums[index] is not None
+                    else None
+                ),
+            }
+            for position, index in enumerate(nav_indices)
+        ]
+    )
     return {
         "snapshots": rows,
         "summary": summary,
@@ -586,6 +613,7 @@ def history_series(conn):
         "chart_min": low,
         "chart_max": high,
         "chart_inception_y": chart_inception_y,
+        "chart_hover": chart_hover,
         "benchmark_values": benchmark_values,
         "benchmark_symbol": benchmark_symbol,
         "imported_exists": any(row["source"] == "imported" for row in rows),

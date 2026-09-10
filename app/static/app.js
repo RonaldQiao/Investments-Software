@@ -85,3 +85,31 @@ document.querySelectorAll(".edit-form").forEach(form=>{
   };
   select.addEventListener("change",toggle);toggle();
 });
+document.querySelectorAll(".chart[data-hover]").forEach(chart=>{
+  const points=JSON.parse(chart.dataset.hover||"[]");
+  const n=points.length;
+  if(!n)return;
+  const symbol=chart.dataset.symbol||"Benchmark";
+  const cursor=chart.querySelector(".chart-cursor");
+  const dotFund=chart.querySelector(".chart-dot-fund");
+  const dotBench=chart.querySelector(".chart-dot-bench");
+  const tip=chart.querySelector(".chart-tip");
+  const pct=v=>(v>=0?"+":"")+(v*100).toFixed(2)+"%";
+  const move=e=>{
+    const rect=chart.getBoundingClientRect();
+    const x=(e.touches?e.touches[0].clientX:e.clientX)-rect.left;
+    const i=Math.max(0,Math.min(n-1,Math.round(x/rect.width*(n-1))));
+    const p=points[i];
+    const px=n>1?i/(n-1)*rect.width:0;
+    cursor.hidden=false;cursor.style.left=px+"px";
+    dotFund.hidden=false;dotFund.style.left=px+"px";dotFund.style.top=p.y+"px";
+    if(p.yb!=null){dotBench.hidden=false;dotBench.style.left=px+"px";dotBench.style.top=p.yb+"px";}else{dotBench.hidden=true;}
+    let html=p.d+"\nFund  "+Number(p.nav).toFixed(2)+"  "+(p.fund!=null?pct(p.fund):"—");
+    if(p.bench!=null)html+='\n<span class="tip-bench">'+symbol+"  "+pct(p.bench)+"</span>";
+    tip.innerHTML=html;tip.hidden=false;
+    tip.style.left=px>rect.width/2?px-tip.offsetWidth-12+"px":px+12+"px";
+  };
+  chart.addEventListener("mousemove",move);
+  chart.addEventListener("touchmove",move);
+  chart.addEventListener("mouseleave",()=>{cursor.hidden=dotFund.hidden=dotBench.hidden=tip.hidden=true;});
+});
