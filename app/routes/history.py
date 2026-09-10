@@ -1,6 +1,6 @@
 import csv
 import io
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -72,8 +72,6 @@ async def import_history(file: UploadFile):
 
 @router.post("/history/benchmark/backfill")
 async def backfill_benchmark_closes():
-    from datetime import date
-
     conn = get_conn()
     try:
         row = conn.execute(

@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import db
 from ..db import get_conn, get_setting, set_setting
+from ..nav import backfill_benchmark
 from ..web import flash_redirect, render, row_dicts
 
 router = APIRouter()
@@ -130,8 +131,6 @@ async def save_settings(
     set_setting(conn, "base_currency", base_currency)
     set_setting(conn, "inception_nav_per_unit", inception_nav_per_unit)
     if benchmark_changed and benchmark_symbol.strip():
-        from ..nav import backfill_benchmark
-
         dates = [
             date.fromisoformat(row["date"])
             for row in conn.execute("SELECT date FROM nav_snapshots").fetchall()
