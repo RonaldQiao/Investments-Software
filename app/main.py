@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import re
 
@@ -24,6 +26,8 @@ from .scheduler import start as start_scheduler
 from .scheduler import stop as stop_scheduler
 
 ROOT = os.path.dirname(__file__)
+LOGGER = logging.getLogger(__name__)
+_background_tasks: set[asyncio.Task] = set()
 app = FastAPI(title="Ledger")
 app.mount("/static", StaticFiles(directory=os.path.join(ROOT, "static")), name="static")
 
@@ -57,6 +61,13 @@ app.include_router(api_router)
 __all__ = ["app", "backup_database"]
 
 
+async def _catch_up_background():
+    try:
+        await catch_up_async()
+    except Exception:
+        LOGGER.exception("catch-up snapshot failed")
+
+
 @app.on_event("startup")
 async def startup():
     for fund in list_funds():
@@ -66,10 +77,14 @@ async def startup():
         finally:
             conn.close()
     if os.environ.get("LEDGER_NO_SCHEDULER") != "1":
-        await catch_up_async()
         start_scheduler()
+        task = asyncio.create_task(_catch_up_background())
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
 
 @app.on_event("shutdown")
 def shutdown():
     stop_scheduler()
+    for task in _background_tasks:
+        task.cancel()
